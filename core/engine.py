@@ -227,7 +227,7 @@ def run(
 ):
     x = _to_nchw(rgb_srgb).float().clamp(0, 1)
     if verbose:
-        print(f"[Chroma Key Studio] batch={x.shape[0]}, mode={background_mode}")
+        print(f"[Chroma Key Studio V2] batch={x.shape[0]}, mode={background_mode}")
     key = key_rgb.view(x.shape[0], 3, 1, 1) if key_rgb.ndim == 2 else key_rgb
     matte, projection, distance, key_vector = compute_matte(
         x,
