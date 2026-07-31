@@ -325,10 +325,10 @@ class AutoChromaSmartBackground:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_TYPES = ("IMAGE", "CHROMA_STUDIO_V2_COLOR", "STRING")
     RETURN_NAMES = ("background_image", "color_hex", "analysis_info")
     FUNCTION = "process"
-    CATEGORY = "Chroma Key Studio"
+    CATEGORY = "Chroma Key Studio V2"
 
     def process(
         self,
@@ -439,7 +439,7 @@ class AutoChromaSmartBackground:
         disabled_text = ", ".join(disabled_names) if disabled_names else "无"
         report = "\n".join(
             [
-                "===== Chroma Key Studio 智能背景 =====",
+                "===== Chroma Key Studio V2 智能背景 =====",
                 f"批次帧数: {batch}（整批统一键色）",
                 *detail_lines,
                 f"禁用色相: {disabled_text}",
@@ -523,10 +523,8 @@ class KeylightSmartBackground(AutoChromaSmartBackground):
 
 
 NODE_CLASS_MAPPINGS = {
-    "AutoChromaSmartBackground": AutoChromaSmartBackground,
-    "KeylightSmartBackground": KeylightSmartBackground,
+    "ChromaKeyStudioSmartBackgroundV2": AutoChromaSmartBackground,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AutoChromaSmartBackground": "Smart Chroma Background (智能抠像背景 V2.0)",
-    "KeylightSmartBackground": "Smart Chroma Background (兼容别名)",
+    "ChromaKeyStudioSmartBackgroundV2": "Smart Chroma Background (Studio V2)",
 }
