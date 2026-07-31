@@ -41,6 +41,7 @@ args_ph    = _load_module("KeylightChromaKeyHub.nodes.args_protect_highlights", 
 args_edge  = _load_module("KeylightChromaKeyHub.nodes.args_edge", os.path.join("nodes","args_edge.py"))
 args_mm    = _load_module("KeylightChromaKeyHub.nodes.args_matte_math", os.path.join("nodes","args_matte_math.py"))
 args_smp   = _load_module("KeylightChromaKeyHub.nodes.args_sampler", os.path.join("nodes","args_sampler.py"))
+smart_bg   = _load_module("KeylightChromaKeyHub.smart_background", "smart_background.py")
 
 KeylightCoreHubV3              = core_hub.KeylightCoreHubV3
 KeySpillAlgoArgsV2_3_6         = args_spill.KeySpillAlgoArgsV2_3_6
@@ -48,9 +49,13 @@ KeyProtectHighlightsArgsV2_3_6 = args_ph.KeyProtectHighlightsArgsV2_3_6
 KeyEdgeArgsV2_3_6              = args_edge.KeyEdgeArgsV2_3_6
 KeyMatteMathArgsV2_3_6         = args_mm.KeyMatteMathArgsV2_3_6
 KeySamplerArgsV2_3_6           = args_smp.KeySamplerArgsV2_3_6
+AutoChromaSmartBackground      = smart_bg.AutoChromaSmartBackground
+KeylightSmartBackground        = smart_bg.KeylightSmartBackground
 
 # Keep mapping KEYS identical to previous version to avoid breaking old workflows
 NODE_CLASS_MAPPINGS = {
+    "AutoChromaSmartBackground": AutoChromaSmartBackground,
+    "KeylightSmartBackground": KeylightSmartBackground,
     "KeylightCoreHubV3": KeylightCoreHubV3,
     "Key Spill/Algo Args (V2.3.6fixE2_clean)": KeySpillAlgoArgsV2_3_6,
     "Key Protect Highlights Args (V2.3.6fixE2_clean)": KeyProtectHighlightsArgsV2_3_6,
@@ -61,12 +66,14 @@ NODE_CLASS_MAPPINGS = {
 
 # Keep mapping keys stable while exposing the new version in the UI.
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "KeylightCoreHubV3": "Smart RGB Keylight (V3.0.0)",
-    "Key Spill/Algo Args (V2.3.6fixE2_clean)": "Key Spill/Algo Args (V3.0.0)",
-    "Key Protect Highlights Args (V2.3.6fixE2_clean)": "Key Protect Highlights Args (V3.0.0)",
-    "Key Edge Args (V2.3.6fixE2_clean)": "Key Edge Args (V3.0.0)",
-    "Key Matte Math Args (V2.3.6fixE2_clean)": "Key Matte Math Args (V3.0.0)",
-    "Key Sampler Args (V2.3.6fixE2_clean)": "Key Sampler Args (V3.0.0)",
+    "AutoChromaSmartBackground": "Smart Chroma Background (智能抠像背景 V2.0)",
+    "KeylightSmartBackground": "Smart Chroma Background (兼容别名)",
+    "KeylightCoreHubV3": "Adaptive Chroma Keylight (V3.1.0)",
+    "Key Spill/Algo Args (V2.3.6fixE2_clean)": "Key Spill/Algo Args (V3.1.0)",
+    "Key Protect Highlights Args (V2.3.6fixE2_clean)": "Key Protect Highlights Args (V3.1.0)",
+    "Key Edge Args (V2.3.6fixE2_clean)": "Key Edge Args (V3.1.0)",
+    "Key Matte Math Args (V2.3.6fixE2_clean)": "Key Matte Math Args (V3.1.0)",
+    "Key Sampler Args (V2.3.6fixE2_clean)": "Key Sampler Args (V3.1.0)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS","NODE_DISPLAY_NAME_MAPPINGS"]
