@@ -1,6 +1,15 @@
-# Keylight Chroma Key Hub V2.3.6
+# Smart RGB Keylight V3.0.0
 
-专业级绿幕/蓝幕色键抠像节点组，灵感源自 After Effects Keylight 插件。支持自动/手动键颜色检测、高级溢色抑制、边缘处理和蒙版数学运算。
+面向“智能选择纯红/纯绿/纯蓝背景 → 视频生成 → Keylight 抠像”的 ComfyUI 节点。保留原节点和旧工作流兼容，并增加引导式逐帧校色、暗色幕布恢复、内置边缘处理以及稳定的 RGB 去溢色。
+
+## 推荐接法
+
+```text
+[Smart RGB Background image] → [视频生成] → [Smart RGB Keylight image]
+[Smart RGB Background color_hex] → [ColorInput] → [Smart RGB Keylight key_color]
+```
+
+`key_mode` 推荐使用默认的 `guided`。它不会盲目猜测背景，而是以上游传入的纯红、纯绿或纯蓝为锚点，仅从每帧边缘选取方向相近的像素进行校色。
 
 ## 安装
 
@@ -40,13 +49,17 @@
 | 参数 | 类型 | 默认值 | 范围 | 说明 |
 |-----|------|-------|------|------|
 | `image` | IMAGE | - | - | 输入的绿幕/蓝幕图像 |
-| `key_mode` | 选择 | auto | auto/manual | 键颜色选择模式 |
+| `key_mode` | 选择 | guided | guided/manual/auto | 引导校色、严格手动或完全自动 |
 | `key_color` | 颜色 | #00FF00 | - | 手动模式下的键颜色（绿色） |
 | `background_mode` | 选择 | alpha | alpha/color/soft_color | 背景处理模式 |
 | `bg_color` | 颜色 | #000000 | - | 替换背景颜色 |
-| `tolerance` | FLOAT | 1.0 | 0.0-2.0 | 颜色容差，值越大键范围越广 |
+| `tolerance` | FLOAT | 1.0 | 0.0-2.0 | 色相偏离惩罚；越大越保护主体、越小越能清理偏色幕布 |
 | `clip_black` | FLOAT | -0.02 | -1.0-1.0 | 黑场裁切，控制透明区域阈值 |
 | `clip_white` | FLOAT | 0.30 | 0.0-2.0 | 白场裁切，控制不透明区域阈值 |
+| `shadow_recovery` | FLOAT | 0.85 | 0.0-1.0 | 恢复被生成模型压暗的有色幕布；纯黑仍保留 |
+| `edge_soft` | FLOAT | 0.05 | 0.0-1.0 | 主节点内置边缘柔化 |
+| `defringe` | FLOAT | 0.07 | 0.0-1.0 | 主节点内置去红/绿/蓝边 |
+| `shrink_expand` | FLOAT | 0.0 | -5.0-5.0 | 主节点内置蒙版收缩或扩展 |
 
 #### 可选输入（连接参数节点）
 
@@ -220,7 +233,7 @@
 [Key Matte Math Args] ────→
 ```
 
-连接所需的参数节点进行精细调整。
+连接所需的参数节点进行精细调整。未连接 `Key Edge Args` 时，主节点自己的 `edge_soft`、`defringe` 和 `shrink_expand` 会直接生效；连接后参数节点会覆盖主节点值。
 
 ---
 
@@ -235,6 +248,13 @@
 ---
 
 ## 更新日志
+
+### V3.0.0
+- 新增 `guided` 模式：以上游 RGB 键控色为锚点，逐帧稳健校正视频生成造成的色偏
+- 新增 `shadow_recovery`：清理暗红、暗绿、暗蓝背景，同时保护纯黑主体
+- 将常用边缘参数内置到核心节点，无需额外连接 `Key Edge Args`
+- 修复 `screen/hybrid` 去溢色只排除单个空间位置的问题
+- 保留 `KeylightCoreHubV3` 节点标识和所有旧参数节点，兼容原工作流
 
 ### V2.3.6fixE3_clean_final
 - 解决 Windows 路径式模块名导致的 `No module named ...nodes.core_hub` 问题
