@@ -1,10 +1,34 @@
 import importlib.util
 from pathlib import Path
+import sys
+import types
+import unittest
 
 import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+V2_IDS = {
+    "ChromaKeyStudioSmartBackgroundV2",
+    "ChromaKeyStudioKeylightV2",
+    "ChromaKeyStudioSpillArgsV2",
+    "ChromaKeyStudioProtectHighlightsArgsV2",
+    "ChromaKeyStudioEdgeArgsV2",
+    "ChromaKeyStudioMatteMathArgsV2",
+    "ChromaKeyStudioSamplerArgsV2",
+}
+
+LEGACY_IDS = {
+    "AutoChromaSmartBackground",
+    "KeylightSmartBackground",
+    "KeylightCoreHubV3",
+    "Key Spill/Algo Args (V2.3.6fixE2_clean)",
+    "Key Protect Highlights Args (V2.3.6fixE2_clean)",
+    "Key Edge Args (V2.3.6fixE2_clean)",
+    "Key Matte Math Args (V2.3.6fixE2_clean)",
+    "Key Sampler Args (V2.3.6fixE2_clean)",
+}
 
 
 def load_module(name, relative_path):
@@ -107,7 +131,7 @@ def test_full_vector_despill_does_not_change_neutral_gray():
 
 def test_guided_sampling_supports_two_channel_hues_and_video_drift():
     plugin = load_plugin()
-    node = plugin.KeylightCoreHubV3()
+    node = plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioKeylightV2"]()
     frames = torch.zeros((3, 32, 32, 3), dtype=torch.float32)
     frames[0] = torch.tensor([0.80, 0.05, 1.00])
     frames[1] = torch.tensor([0.95, 0.03, 0.78])
@@ -126,34 +150,73 @@ def test_guided_sampling_supports_two_channel_hues_and_video_drift():
     assert torch.all(mask[:, 16, 16] > 0.98)
 
 
-def test_plugin_mapping_schema_and_colour_bridge_are_legacy_compatible():
+def test_plugin_mappings_and_socket_types_are_v2_isolated():
     plugin = load_plugin()
-    expected = {
-        "AutoChromaSmartBackground", "KeylightSmartBackground", "KeylightCoreHubV3",
-        "Key Spill/Algo Args (V2.3.6fixE2_clean)",
-        "Key Protect Highlights Args (V2.3.6fixE2_clean)",
-        "Key Edge Args (V2.3.6fixE2_clean)",
-        "Key Matte Math Args (V2.3.6fixE2_clean)",
-        "Key Sampler Args (V2.3.6fixE2_clean)",
-    }
-    assert expected.issubset(plugin.NODE_CLASS_MAPPINGS)
-    schema = plugin.KeylightCoreHubV3.INPUT_TYPES()
+    assert set(plugin.NODE_CLASS_MAPPINGS) == V2_IDS
+    assert set(plugin.NODE_DISPLAY_NAME_MAPPINGS) == V2_IDS
+    assert V2_IDS.isdisjoint(LEGACY_IDS)
+    assert plugin.PYTHON_NAMESPACE == "ChromaKeyStudioV2"
+    node_class = plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioKeylightV2"]
+    schema = node_class.INPUT_TYPES()
     assert list(schema["required"])[:8] == [
         "image", "key_mode", "key_color", "background_mode", "bg_color",
         "tolerance", "clip_black", "clip_white",
     ]
+    assert schema["required"]["key_color"][0] == "CHROMA_STUDIO_V2_COLOR"
+    assert schema["required"]["bg_color"][0] == "CHROMA_STUDIO_V2_COLOR"
     assert list(schema["optional"]) == [
         "sampler_args", "edge_args", "spill_algo_args", "ph_args", "mm_args",
     ]
-    assert plugin.KeylightCoreHubV3.RETURN_TYPES == ("IMAGE", "MASK", "IMAGE", "IMAGE")
+    assert [schema["optional"][name][0] for name in schema["optional"]] == [
+        "CHROMA_STUDIO_V2_SAMPLER_ARGS",
+        "CHROMA_STUDIO_V2_EDGE_ARGS",
+        "CHROMA_STUDIO_V2_SPILL_ALGO_ARGS",
+        "CHROMA_STUDIO_V2_PH_ARGS",
+        "CHROMA_STUDIO_V2_MM_ARGS",
+    ]
+    assert node_class.RETURN_TYPES == ("IMAGE", "MASK", "IMAGE", "IMAGE")
+    assert all("V2" in name for name in plugin.NODE_DISPLAY_NAME_MAPPINGS.values())
+    assert all(cls.CATEGORY == "Chroma Key Studio V2" for cls in plugin.NODE_CLASS_MAPPINGS.values())
+    smart_class = plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioSmartBackgroundV2"]
+    assert smart_class.RETURN_TYPES[1] == schema["required"]["key_color"][0]
     for value in ("#FF0000", "#00FF00", "#0000FF", "#00FFFF", "#FFFF00", "#FF00FF", "#BF00FF"):
         parsed = plugin.core_helpers.to_color3(value)
         assert parsed.shape == (1, 3, 1, 1)
 
 
+def test_v2_load_preserves_legacy_private_modules():
+    names = (
+        "KeylightChromaKeyHub.core.engine",
+        "KeylightChromaKeyHub.core.helpers",
+        "KeylightChromaKeyHub.nodes.core_hub",
+    )
+    previous = {name: sys.modules.get(name) for name in names}
+    sentinels = {name: types.ModuleType(name) for name in names}
+    try:
+        sys.modules.update(sentinels)
+        load_plugin()
+        for name, sentinel in sentinels.items():
+            assert sys.modules[name] is sentinel
+        assert "ChromaKeyStudioV2.core.engine" in sys.modules
+        assert "ChromaKeyStudioV2.nodes.core_hub" in sys.modules
+    finally:
+        for name, original in previous.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
+
+
+def test_frontend_extension_and_widget_type_are_v2_isolated():
+    source = (ROOT / "web" / "colorWidget.js").read_text(encoding="utf-8")
+    assert 'name: "ChromaKeyStudioV2.colorWidget"' in source
+    assert 'name: "AILab.colorWidget"' not in source
+    assert "CHROMA_STUDIO_V2_COLOR" in source
+
+
 def test_rgba_uses_clean_foreground_even_in_colour_background_mode():
     plugin = load_plugin()
-    node = plugin.KeylightCoreHubV3()
+    node = plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioKeylightV2"]()
     image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
     image[:] = torch.tensor([0.75, 0.0, 1.0])
     image[:, 2:6, 2:6] = torch.tensor([0.4, 0.4, 0.4])
@@ -166,3 +229,51 @@ def test_rgba_uses_clean_foreground_even_in_colour_background_mode():
     assert mask[0, 0, 0] < 0.01
     assert rgba[0, 0, 0, 3] < 0.01
     assert not torch.all(rgba[0, 0, 0, :3] > 0.99)
+
+
+class KeylightRegressionTests(unittest.TestCase):
+    def test_all_three_primary_screens_key_out(self):
+        test_all_three_primary_screens_key_out()
+
+    def test_black_subject_is_preserved_for_every_primary(self):
+        test_black_subject_is_preserved_for_every_primary()
+
+    def test_cyan_subject_is_preserved_on_red_screen(self):
+        test_cyan_subject_is_preserved_on_red_screen()
+
+    def test_dark_coloured_screen_recovery_improves_matte(self):
+        test_dark_coloured_screen_recovery_improves_matte()
+
+    def test_hybrid_despill_handles_whole_frame(self):
+        test_hybrid_despill_handles_whole_frame()
+
+    def test_arbitrary_hue_screens_and_shadows_key_out(self):
+        test_arbitrary_hue_screens_and_shadows_key_out()
+
+    def test_neutral_black_gray_white_and_metal_are_preserved(self):
+        test_neutral_black_gray_white_and_metal_are_preserved_on_intermediate_keys()
+
+    def test_magenta_key_preserves_subject_colours(self):
+        test_magenta_key_preserves_red_blue_and_cyan_subject_colours()
+
+    def test_full_vector_despill_does_not_change_neutral_gray(self):
+        test_full_vector_despill_does_not_change_neutral_gray()
+
+    def test_guided_sampling_supports_video_drift(self):
+        test_guided_sampling_supports_two_channel_hues_and_video_drift()
+
+    def test_plugin_mappings_and_socket_types_are_v2_isolated(self):
+        test_plugin_mappings_and_socket_types_are_v2_isolated()
+
+    def test_v2_load_preserves_legacy_private_modules(self):
+        test_v2_load_preserves_legacy_private_modules()
+
+    def test_frontend_extension_and_widget_type_are_v2_isolated(self):
+        test_frontend_extension_and_widget_type_are_v2_isolated()
+
+    def test_rgba_uses_clean_foreground_in_colour_mode(self):
+        test_rgba_uses_clean_foreground_even_in_colour_background_mode()
+
+
+if __name__ == "__main__":
+    unittest.main()
