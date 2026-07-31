@@ -1,10 +1,12 @@
 
+import math
+
 import torch
-from ..core.engine import run as engine_run, _to_nchw
+from ..core.engine import run as engine_run
 from ..core.helpers import to_color3
 
 class KeylightCoreHubV3:
-    CATEGORY = "KeylightChromaKeyHub"
+    CATEGORY = "Chroma Key Studio"
     FUNCTION = "apply"
     RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE")
     RETURN_NAMES = ("image", "mask", "mask_image", "image_rgba")
@@ -41,8 +43,7 @@ class KeylightCoreHubV3:
             return img.permute(0,3,1,2)
         raise ValueError("Unsupported image tensor shape. Expect [N,C,H,W] or [N,H,W,C].")
 
-    def _auto_key_from_border(self, bhwc, frac=0.08):
-        # bhwc: [N,H,W,3]
+    def _border_pixels(self, bhwc, frac=0.08):
         N,H,W,_ = bhwc.shape
         g = max(1, int(round(min(H,W) * max(0.0, min(0.45, float(frac))))))
         if g*2 >= min(H,W):
@@ -53,8 +54,45 @@ class KeylightCoreHubV3:
         right  = bhwc[:, :, -g:, :]
         border = torch.cat([top.reshape(N,-1,3), bottom.reshape(N,-1,3),
                             left.reshape(N,-1,3), right.reshape(N,-1,3)], dim=1)
-        mean = border.mean(dim=1)  # [N,3]
-        return mean.view(N,3,1,1)  # -> [N,3,1,1]
+        return border
+
+    def _colour_features(self, values):
+        maximum = values.max(dim=2, keepdim=True).values
+        minimum = values.min(dim=2, keepdim=True).values
+        saturation = (maximum - minimum) / (maximum + 1e-6)
+        chroma = values - values.mean(dim=2, keepdim=True)
+        direction = chroma / (torch.linalg.norm(chroma, dim=2, keepdim=True) + 1e-6)
+        return direction, saturation.squeeze(2), maximum.squeeze(2)
+
+    def _robust_observed_colour(self, samples):
+        value = samples.max(dim=1).values
+        normalized = samples / (value.unsqueeze(1) + 1e-6)
+        shape = normalized.median(dim=0).values
+        shape = shape / (shape.max() + 1e-6)
+        return (shape * value.median()).clamp(0.0, 1.0)
+
+    def _auto_key_from_border(self, bhwc, frac=0.08):
+        """Estimate the dominant saturated border hue without averaging to gray."""
+        border = self._border_pixels(bhwc, frac=frac)
+        direction, saturation, value = self._colour_features(border)
+        refined = []
+        for index in range(border.shape[0]):
+            valid = (saturation[index] >= 0.08) & (value[index] >= 0.03)
+            samples = border[index][valid]
+            sample_direction = direction[index][valid]
+            minimum = max(16, border.shape[1] // 200)
+            if samples.shape[0] < minimum:
+                refined.append(border[index].mean(dim=0))
+                continue
+            weight = (saturation[index][valid] * value[index][valid]).unsqueeze(1)
+            anchor_direction = (sample_direction * weight).sum(dim=0)
+            anchor_direction = anchor_direction / (torch.linalg.norm(anchor_direction) + 1e-6)
+            compatible = (sample_direction * anchor_direction).sum(dim=1) >= math.cos(math.radians(40.0))
+            compatible_samples = samples[compatible]
+            if compatible_samples.shape[0] < minimum:
+                compatible_samples = samples
+            refined.append(self._robust_observed_colour(compatible_samples))
+        return torch.stack(refined, dim=0).view(border.shape[0], 3, 1, 1)
 
     def _auto_key_from_rect(self, bhwc, rect):
         # rect: [x,y,w,h] in [0..1], center-based
@@ -75,39 +113,25 @@ class KeylightCoreHubV3:
     def _guided_key_from_border(self, bhwc, anchor, frac=0.08, similarity=0.86):
         """Refine a supplied RGB key using only compatible border pixels.
 
-        The supplied pure R/G/B key remains the semantic anchor. Per-frame
-        border sampling only compensates for hue drift introduced by video
-        generation, compression and lighting.
+        The supplied key remains the semantic anchor. Full opponent-hue matching
+        supports primaries, cyan/yellow/magenta and arbitrary intermediate hues.
         """
-        N,H,W,_ = bhwc.shape
-        g = max(1, int(round(min(H,W) * max(0.0, min(0.45, float(frac))))))
-        if g*2 >= min(H,W):
-            g = max(1, min(H,W)//4)
-        border = torch.cat([
-            bhwc[:, :g].reshape(N,-1,3), bhwc[:, -g:].reshape(N,-1,3),
-            bhwc[:, :, :g].reshape(N,-1,3), bhwc[:, :, -g:].reshape(N,-1,3)
-        ], dim=1)
-
-        # Match in linear RGB direction so exposure changes do not prevent a
-        # valid screen sample. Very dark pixels are excluded to protect black.
-        border_lin = torch.where(
-            border <= 0.04045, border/12.92,
-            ((border+0.055)/1.055).clamp(min=0)**2.4
-        )
+        border = self._border_pixels(bhwc, frac=frac)
+        N = border.shape[0]
         anchor_rgb = anchor.view(N,1,3).clamp(0,1)
-        anchor_lin = torch.where(
-            anchor_rgb <= 0.04045, anchor_rgb/12.92,
-            ((anchor_rgb+0.055)/1.055).clamp(min=0)**2.4
+        border_direction, border_saturation, border_value = self._colour_features(border)
+        anchor_direction, anchor_saturation, _ = self._colour_features(anchor_rgb)
+        cosine = (border_direction * anchor_direction).sum(2)
+        saturation_floor = torch.maximum(
+            anchor_saturation * 0.15,
+            anchor_saturation.new_full(anchor_saturation.shape, 0.08),
         )
-        border_mag = torch.linalg.norm(border_lin, dim=2, keepdim=True)
-        anchor_dir = anchor_lin / (torch.linalg.norm(anchor_lin, dim=2, keepdim=True) + 1e-6)
-        border_dir = border_lin / (border_mag + 1e-6)
-        cosine = (border_dir * anchor_dir).sum(2)
-        anchor_channel = torch.argmax(anchor_rgb, dim=2)
-        border_channel = torch.argmax(border, dim=2)
-        valid = ((cosine >= float(similarity)) &
-                 (border_mag.squeeze(2) >= 0.008) &
-                 (border_channel == anchor_channel))
+        cosine_floor = max(float(similarity), math.cos(math.radians(35.0)))
+        valid = (
+            (cosine >= cosine_floor)
+            & (border_saturation >= saturation_floor)
+            & (border_value >= 0.03)
+        )
 
         refined = []
         for i in range(N):
@@ -116,15 +140,19 @@ class KeylightCoreHubV3:
             if samples.shape[0] < minimum:
                 refined.append(anchor_rgb[i,0])
             else:
-                # Median rejects foreground, particles and isolated highlights.
-                observed = samples.median(dim=0).values
+                # Hue-normalized median rejects foreground, gray edges and particles.
+                observed = self._robust_observed_colour(samples)
                 refined.append(0.15 * anchor_rgb[i,0] + 0.85 * observed)
-        return torch.stack(refined, dim=0).view(N,3,1,1)
+        frame_estimates = torch.stack(refined, dim=0)
+        # A batch median damps frame-to-frame key drift in generated video.
+        batch_estimate = frame_estimates.median(dim=0).values.view(1,3)
+        stable = 0.70 * frame_estimates + 0.30 * batch_estimate
+        return stable.clamp(0.0, 1.0).view(N,3,1,1)
 
     def apply(self, image, key_mode, key_color, background_mode, bg_color,
-              tolerance, clip_black, clip_white, shadow_recovery=0.85,
-              edge_soft=0.05, defringe=0.07, shrink_expand=0.0,
-              sampler_args=None, edge_args=None, spill_algo_args=None, ph_args=None, mm_args=None):
+              tolerance, clip_black, clip_white,
+              sampler_args=None, edge_args=None, spill_algo_args=None, ph_args=None, mm_args=None,
+              shadow_recovery=0.85, edge_soft=0.05, defringe=0.07, shrink_expand=0.0):
         # Normalize image to BCHW [N,3,H,W]
         x_bchw = self._ensure_bchw(image).float().clamp(0,1)
         if x_bchw.shape[1] == 1:
@@ -166,7 +194,7 @@ class KeylightCoreHubV3:
         mm_cfg          = mm_args or None
 
         # Call engine
-        comp, a, mask_img, _ = engine_run(
+        comp, a, mask_img, clean_foreground = engine_run(
             x_bchw, key_rgb, float(tolerance), float(clip_black), float(clip_white),
             edge_soft=edge_soft, shrink_expand=shrink_expand, defringe=defringe,
             spill_algo=spill_cfg, ph=ph_cfg, matte_math=mm_cfg,
@@ -176,6 +204,7 @@ class KeylightCoreHubV3:
 
         # Build normalized outputs
         comp_bhwc = comp.permute(0,2,3,1).contiguous()
+        clean_bhwc = clean_foreground.permute(0,2,3,1).contiguous()
         mask_hw   = a[:,0,:,:] if a.dim()==4 and a.shape[1]==1 else a.squeeze(1)
         if mask_hw.dim()==2:
             mask_hw = mask_hw.unsqueeze(0)
@@ -183,10 +212,10 @@ class KeylightCoreHubV3:
 
         # Always provide RGBA
         try:
-            image_rgba = torch.cat([comp_bhwc, alpha], dim=-1).clamp(0.0, 1.0)
+            image_rgba = torch.cat([clean_bhwc, alpha], dim=-1).clamp(0.0, 1.0)
         except Exception:
-            ones = comp_bhwc.new_ones((*comp_bhwc.shape[:3],1))
-            image_rgba = torch.cat([comp_bhwc[...,:3], ones], dim=-1)
+            ones = clean_bhwc.new_ones((*clean_bhwc.shape[:3],1))
+            image_rgba = torch.cat([clean_bhwc[...,:3], ones], dim=-1)
 
         # Primary 'image' output auto-switch
         bgm = str(background_mode).lower() if isinstance(background_mode, str) else "alpha"
