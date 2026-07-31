@@ -13,13 +13,17 @@ class KeylightCoreHubV3:
     def INPUT_TYPES(cls):
         return {"required": {
                 "image": ("IMAGE",),
-                "key_mode": (["auto","manual"], {"default":"auto"}),
+                "key_mode": (["guided","manual","auto"], {"default":"guided"}),
                 "key_color": ("COLORCODE", {"default": "#00FF00"}),
                 "background_mode": (["alpha","color","soft_color"], {"default":"alpha"}),
                 "bg_color": ("COLORCODE", {"default": "#000000"}),
                 "tolerance": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "clip_black": ("FLOAT", {"default": -0.02, "min": -1.0, "max": 1.0, "step": 0.001}),
                 "clip_white": ("FLOAT", {"default": 0.30, "min": 0.0, "max": 2.0, "step": 0.001}),
+                "shadow_recovery": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_soft": ("FLOAT", {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "defringe": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "shrink_expand": ("FLOAT", {"default": 0.0, "min": -5.0, "max": 5.0, "step": 1.0}),
             },
             "optional": {
                 "sampler_args": ("KEY_SAMPLER_ARGS",),
@@ -68,8 +72,58 @@ class KeylightCoreHubV3:
         mean = patch.reshape(N,-1,3).mean(dim=1)
         return mean.view(N,3,1,1)
 
+    def _guided_key_from_border(self, bhwc, anchor, frac=0.08, similarity=0.86):
+        """Refine a supplied RGB key using only compatible border pixels.
+
+        The supplied pure R/G/B key remains the semantic anchor. Per-frame
+        border sampling only compensates for hue drift introduced by video
+        generation, compression and lighting.
+        """
+        N,H,W,_ = bhwc.shape
+        g = max(1, int(round(min(H,W) * max(0.0, min(0.45, float(frac))))))
+        if g*2 >= min(H,W):
+            g = max(1, min(H,W)//4)
+        border = torch.cat([
+            bhwc[:, :g].reshape(N,-1,3), bhwc[:, -g:].reshape(N,-1,3),
+            bhwc[:, :, :g].reshape(N,-1,3), bhwc[:, :, -g:].reshape(N,-1,3)
+        ], dim=1)
+
+        # Match in linear RGB direction so exposure changes do not prevent a
+        # valid screen sample. Very dark pixels are excluded to protect black.
+        border_lin = torch.where(
+            border <= 0.04045, border/12.92,
+            ((border+0.055)/1.055).clamp(min=0)**2.4
+        )
+        anchor_rgb = anchor.view(N,1,3).clamp(0,1)
+        anchor_lin = torch.where(
+            anchor_rgb <= 0.04045, anchor_rgb/12.92,
+            ((anchor_rgb+0.055)/1.055).clamp(min=0)**2.4
+        )
+        border_mag = torch.linalg.norm(border_lin, dim=2, keepdim=True)
+        anchor_dir = anchor_lin / (torch.linalg.norm(anchor_lin, dim=2, keepdim=True) + 1e-6)
+        border_dir = border_lin / (border_mag + 1e-6)
+        cosine = (border_dir * anchor_dir).sum(2)
+        anchor_channel = torch.argmax(anchor_rgb, dim=2)
+        border_channel = torch.argmax(border, dim=2)
+        valid = ((cosine >= float(similarity)) &
+                 (border_mag.squeeze(2) >= 0.008) &
+                 (border_channel == anchor_channel))
+
+        refined = []
+        for i in range(N):
+            samples = border[i][valid[i]]
+            minimum = max(16, border.shape[1] // 200)
+            if samples.shape[0] < minimum:
+                refined.append(anchor_rgb[i,0])
+            else:
+                # Median rejects foreground, particles and isolated highlights.
+                observed = samples.median(dim=0).values
+                refined.append(0.15 * anchor_rgb[i,0] + 0.85 * observed)
+        return torch.stack(refined, dim=0).view(N,3,1,1)
+
     def apply(self, image, key_mode, key_color, background_mode, bg_color,
-              tolerance, clip_black, clip_white,
+              tolerance, clip_black, clip_white, shadow_recovery=0.85,
+              edge_soft=0.05, defringe=0.07, shrink_expand=0.0,
               sampler_args=None, edge_args=None, spill_algo_args=None, ph_args=None, mm_args=None):
         # Normalize image to BCHW [N,3,H,W]
         x_bchw = self._ensure_bchw(image).float().clamp(0,1)
@@ -80,7 +134,8 @@ class KeylightCoreHubV3:
 
         # Prepare sampler-based auto key if requested
         bhwc = x_bchw.permute(0,2,3,1).contiguous()
-        if str(key_mode) == "auto":
+        mode_name = str(key_mode)
+        if mode_name == "auto":
             s = sampler_args or {}
             mode = str(s.get("mode","auto_border"))
             if mode == "auto_border":
@@ -90,18 +145,22 @@ class KeylightCoreHubV3:
                 rect = s.get("rect", [0.45,0.45,0.1,0.1])
                 key_rgb = self._auto_key_from_rect(bhwc, rect=rect)
         else:
-            # Manual mode uses UI color
+            # Manual and guided modes both start from the upstream colour.
             N = x_bchw.shape[0]
             k1 = to_color3(key_color, device=x_bchw.device, dtype=x_bchw.dtype)  # [1,3,1,1]
             key_rgb = k1.repeat(N,1,1,1)  # [N,3,1,1]
+            if mode_name == "guided":
+                s = sampler_args or {}
+                frac = float(s.get("auto_border_frac", 0.08))
+                key_rgb = self._guided_key_from_border(bhwc, key_rgb, frac=frac)
 
         # Background color tensor (single)
         bg_rgb = to_color3(bg_color, device=x_bchw.device, dtype=x_bchw.dtype)
 
         # Unpack optional args safely
-        edge_soft       = float((edge_args or {}).get("edge_soft", 0.0))
-        shrink_expand   = float((edge_args or {}).get("shrink_expand", 0.0))
-        defringe        = float((edge_args or {}).get("defringe", 0.0))
+        edge_soft       = float((edge_args or {}).get("edge_soft", edge_soft))
+        shrink_expand   = float((edge_args or {}).get("shrink_expand", shrink_expand))
+        defringe        = float((edge_args or {}).get("defringe", defringe))
         spill_cfg       = spill_algo_args or None
         ph_cfg          = ph_args or None
         mm_cfg          = mm_args or None
@@ -112,7 +171,7 @@ class KeylightCoreHubV3:
             edge_soft=edge_soft, shrink_expand=shrink_expand, defringe=defringe,
             spill_algo=spill_cfg, ph=ph_cfg, matte_math=mm_cfg,
             background_mode=str(background_mode), bg_color=bg_rgb,
-            use_linear=True, verbose=False
+            use_linear=True, verbose=False, shadow_recovery=float(shadow_recovery)
         )
 
         # Build normalized outputs
