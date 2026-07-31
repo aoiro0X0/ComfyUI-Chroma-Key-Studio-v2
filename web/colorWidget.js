@@ -1,5 +1,5 @@
 /**
- * COLOR Widget for ComfyUI
+ * Chroma Key Studio V2 color widget for ComfyUI
  *
  * This integration script is licensed under the GNU General Public License v3.0 (GPL-3.0).
  * If you incorporate or modify this code, please credit AILab as the original source:
@@ -22,17 +22,17 @@ const getContrastTextColor = (hexColor) => {
     return luminance > 0.5 ? '#333333' : '#cccccc';
 };
 
-const AILabColorWidget = {
-    COLORCODE: (key, val) => {
+const ChromaKeyStudioV2ColorWidget = {
+    CHROMA_STUDIO_V2_COLOR: (key, val) => {
         const widget = {};
         widget.y = 0;
         widget.name = key;
-        widget.type = 'COLORCODE';
+        widget.type = 'CHROMA_STUDIO_V2_COLOR';
         widget.options = { default: '#222222' };
         widget.value = typeof val === 'string' ? val : '#222222';
 
         widget.draw = function (ctx, node, widgetWidth, widgetY, height) {
-            const hide = this.type !== 'COLORCODE' || app.canvas.ds.scale < 0.5;
+            const hide = this.type !== 'CHROMA_STUDIO_V2_COLOR' || app.canvas.ds.scale < 0.5;
             if (hide) {
                 return;
             }
@@ -120,14 +120,17 @@ const AILabColorWidget = {
 };
 
 app.registerExtension({
-    name: "AILab.colorWidget",
+    name: "ChromaKeyStudioV2.colorWidget",
 
     getCustomWidgets() {
         return {
-            COLORCODE: (node, inputName, inputData) => {
+            CHROMA_STUDIO_V2_COLOR: (node, inputName, inputData) => {
                 return {
                     widget: node.addCustomWidget(
-                        AILabColorWidget.COLORCODE(inputName, inputData?.[1]?.default || '#222222')
+                        ChromaKeyStudioV2ColorWidget.CHROMA_STUDIO_V2_COLOR(
+                            inputName,
+                            inputData?.[1]?.default || '#222222'
+                        )
                     ),
                     minWidth: 150,
                     minHeight: 32,
