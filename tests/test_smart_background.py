@@ -105,7 +105,7 @@ class SmartBackgroundTests(unittest.TestCase):
         _, selected, _ = self.node.process(torch.from_numpy(image))
         self.assertEqual(selected, "#FF0000")
 
-    def test_legacy_widget_prefix_and_outputs_are_stable(self):
+    def test_v2_widget_order_and_outputs_are_stable(self):
         schema = self.node.INPUT_TYPES()
         optional = list(schema["optional"])
         self.assertEqual(
@@ -117,10 +117,14 @@ class SmartBackgroundTests(unittest.TestCase):
                 "disable_blue_bg",
             ],
         )
-        self.assertEqual(self.node.RETURN_TYPES, ("IMAGE", "STRING", "STRING"))
+        self.assertEqual(
+            self.node.RETURN_TYPES,
+            ("IMAGE", "CHROMA_STUDIO_V2_COLOR", "STRING"),
+        )
         self.assertEqual(self.node.RETURN_NAMES, ("background_image", "color_hex", "analysis_info"))
+        self.assertEqual(self.node.CATEGORY, "Chroma Key Studio V2")
 
-    def test_standalone_alias_keeps_its_historical_widget_order(self):
+    def test_internal_standalone_wrapper_keeps_its_historical_widget_order(self):
         standalone = MODULE.KeylightSmartBackground()
         self.assertEqual(
             list(standalone.INPUT_TYPES()["optional"]),
@@ -135,6 +139,21 @@ class SmartBackgroundTests(unittest.TestCase):
             False, False, False,
         )
         self.assertEqual(selected, "#FF0000")
+
+    def test_module_exports_only_the_v2_mapping(self):
+        self.assertEqual(
+            set(MODULE.NODE_CLASS_MAPPINGS),
+            {"ChromaKeyStudioSmartBackgroundV2"},
+        )
+        self.assertNotIn("AutoChromaSmartBackground", MODULE.NODE_CLASS_MAPPINGS)
+        self.assertNotIn("KeylightSmartBackground", MODULE.NODE_CLASS_MAPPINGS)
+        self.assertEqual(
+            MODULE.NODE_DISPLAY_NAME_MAPPINGS,
+            {
+                "ChromaKeyStudioSmartBackgroundV2":
+                    "Smart Chroma Background (Studio V2)"
+            },
+        )
 
 
 if __name__ == "__main__":
