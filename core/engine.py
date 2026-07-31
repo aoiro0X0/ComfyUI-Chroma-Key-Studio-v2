@@ -34,7 +34,8 @@ def build_key_vector(key_rgb):
     k_lin = srgb_to_linear(key_rgb.clamp(0,1))
     return _normalize(k_lin + 1e-6)
 
-def compute_matte(img_srgb, key_rgb, tolerance, clip_black, clip_white, use_linear=True):
+def compute_matte(img_srgb, key_rgb, tolerance, clip_black, clip_white,
+                  use_linear=True, shadow_recovery=0.85):
     x = _to_nchw(img_srgb).float().clamp(0,1)
     k = build_key_vector(key_rgb)
     xx = srgb_to_linear(x) if use_linear else x
@@ -43,6 +44,25 @@ def compute_matte(img_srgb, key_rgb, tolerance, clip_black, clip_white, use_line
     score = proj - tolerance*dist
     m = (score - clip_black) / max(1e-6, (clip_white - clip_black))
     matte = 1.0 - m.clamp(0,1)
+
+    # Projection-based keys become weak when the screen is darkened by a video
+    # model. Recover coloured shadows from their direction while protecting
+    # genuinely black foreground pixels with a magnitude gate.
+    recovery = max(0.0, min(1.0, float(shadow_recovery)))
+    if recovery > 0.0:
+        mag = torch.linalg.norm(xx, dim=1, keepdim=True)
+        direction = xx / (mag + 1e-6)
+        similarity = (direction * k).sum(1, keepdim=True).clamp(0, 1)
+        similarity_floor = max(0.55, min(0.92, 0.82 - 0.10 * float(tolerance)))
+        chroma_match = ((similarity - similarity_floor) /
+                        max(1e-6, 1.0 - similarity_floor)).clamp(0, 1)
+        # Linear RGB magnitude below this range remains foreground. This is
+        # what keeps a black subject intact even when its hue is undefined.
+        visible_colour = ((mag - 0.008) / 0.045).clamp(0, 1)
+        chroma_background = chroma_match * visible_colour
+        matte = matte * (1.0 - recovery * chroma_background)
+        black_protect = (1.0 - mag / 0.008).clamp(0, 1)
+        matte = torch.maximum(matte, black_protect)
     return matte.clamp(0,1), proj, dist, k
 
 def _spill_suppress(work, proj, dist, k, matte, desp, balance=1.2, extra_lowalpha=0.2, ph_mask=None, ph_strength=0.0, mode='hybrid'):
@@ -56,7 +76,8 @@ def _spill_suppress(work, proj, dist, k, matte, desp, balance=1.2, extra_lowalph
     oth_sel = torch.gather(other_max,1, gather_idx).squeeze(1)
     channel_excess = (key_sel - oth_sel).clamp(min=0.0)
     others = work.clone()
-    others.scatter_(1, idx.view(-1,1,1,1), -1e6)
+    scatter_idx = idx.view(-1,1,1,1).expand(-1,1,work.shape[2],work.shape[3])
+    others.scatter_(1, scatter_idx, -1e6)
     other_only_max = others.max(1, keepdim=True)[0]
     screen = (work * k).sum(1, keepdim=True)
     screen_excess = (screen - other_only_max).clamp(min=0.0)
@@ -98,7 +119,8 @@ def composite(rgb_srgb, matte, mode='alpha', bg_color=None):
 def run(rgb_srgb, key_rgb, tolerance, clip_black, clip_white,
         edge_soft=0.0, shrink_expand=0.0, defringe=0.0,
         spill_algo=None, ph=None, matte_math=None,
-        background_mode='alpha', bg_color=None, use_linear=True, verbose=False):
+        background_mode='alpha', bg_color=None, use_linear=True, verbose=False,
+        shadow_recovery=0.85):
     x = _to_nchw(rgb_srgb).float().clamp(0,1)
     B = x.shape[0]
     if verbose:
@@ -107,7 +129,10 @@ def run(rgb_srgb, key_rgb, tolerance, clip_black, clip_white,
         k = key_rgb.view(B,3,1,1)
     else:
         k = key_rgb
-    matte, proj, dist, key_vec = compute_matte(x, k, tolerance, clip_black, clip_white, use_linear=use_linear)
+    matte, proj, dist, key_vec = compute_matte(
+        x, k, tolerance, clip_black, clip_white,
+        use_linear=use_linear, shadow_recovery=shadow_recovery
+    )
 
     if edge_soft>0.0:
         g = int(max(1, round(edge_soft*10)))
