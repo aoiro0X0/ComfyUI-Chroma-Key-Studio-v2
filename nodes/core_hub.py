@@ -6,7 +6,7 @@ from ..core.engine import run as engine_run
 from ..core.helpers import to_color3
 
 class KeylightCoreHubV3:
-    CATEGORY = "Chroma Key Studio"
+    CATEGORY = "Chroma Key Studio V2"
     FUNCTION = "apply"
     RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE")
     RETURN_NAMES = ("image", "mask", "mask_image", "image_rgba")
@@ -16,9 +16,9 @@ class KeylightCoreHubV3:
         return {"required": {
                 "image": ("IMAGE",),
                 "key_mode": (["guided","manual","auto"], {"default":"guided"}),
-                "key_color": ("COLORCODE", {"default": "#00FF00"}),
+                "key_color": ("CHROMA_STUDIO_V2_COLOR", {"default": "#00FF00"}),
                 "background_mode": (["alpha","color","soft_color"], {"default":"alpha"}),
-                "bg_color": ("COLORCODE", {"default": "#000000"}),
+                "bg_color": ("CHROMA_STUDIO_V2_COLOR", {"default": "#000000"}),
                 "tolerance": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "clip_black": ("FLOAT", {"default": -0.02, "min": -1.0, "max": 1.0, "step": 0.001}),
                 "clip_white": ("FLOAT", {"default": 0.30, "min": 0.0, "max": 2.0, "step": 0.001}),
@@ -28,11 +28,11 @@ class KeylightCoreHubV3:
                 "shrink_expand": ("FLOAT", {"default": 0.0, "min": -5.0, "max": 5.0, "step": 1.0}),
             },
             "optional": {
-                "sampler_args": ("KEY_SAMPLER_ARGS",),
-                "edge_args": ("KEY_EDGE_ARGS",),
-                "spill_algo_args": ("KEY_SPILL_ALGO_ARGS",),
-                "ph_args": ("KEY_PH_ARGS",),
-                "mm_args": ("KEY_MM_ARGS",),
+                "sampler_args": ("CHROMA_STUDIO_V2_SAMPLER_ARGS",),
+                "edge_args": ("CHROMA_STUDIO_V2_EDGE_ARGS",),
+                "spill_algo_args": ("CHROMA_STUDIO_V2_SPILL_ALGO_ARGS",),
+                "ph_args": ("CHROMA_STUDIO_V2_PH_ARGS",),
+                "mm_args": ("CHROMA_STUDIO_V2_MM_ARGS",),
             }
         }
 
