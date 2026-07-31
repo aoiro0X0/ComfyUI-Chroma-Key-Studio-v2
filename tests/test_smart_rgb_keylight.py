@@ -17,6 +17,17 @@ def load_module(name, relative_path):
 engine = load_module("smart_rgb_engine", "core/engine.py")
 
 
+def load_plugin():
+    spec = importlib.util.spec_from_file_location(
+        "chroma_key_studio_test_package",
+        ROOT / "__init__.py",
+        submodule_search_locations=[str(ROOT)],
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def matte_for(pixel, key, **kwargs):
     image = torch.tensor(pixel, dtype=torch.float32).view(1, 3, 1, 1)
     key_rgb = torch.tensor(key, dtype=torch.float32).view(1, 3, 1, 1)
@@ -59,3 +70,99 @@ def test_hybrid_despill_handles_whole_frame():
     matte = torch.zeros((1, 1, 4, 5), dtype=torch.float32)
     result = engine._spill_suppress(work, proj, dist, key, matte, 1.0)
     assert torch.all(result[:, 1] < work[:, 1])
+
+
+def test_arbitrary_hue_screens_and_shadows_key_out():
+    colours = (
+        [0, 1, 1], [1, 1, 0], [1, 0, 1], [0.75, 0, 1], [1, 0.5, 0],
+    )
+    for colour in colours:
+        assert matte_for(colour, colour) < 0.01
+        shadow = [value * 0.25 for value in colour]
+        assert matte_for(shadow, colour) < 0.01
+
+
+def test_neutral_black_gray_white_and_metal_are_preserved_on_intermediate_keys():
+    keys = ([1, 0, 1], [0.75, 0, 1], [1, 1, 0], [0, 1, 1])
+    neutrals = ([0, 0, 0], [0.15, 0.15, 0.15], [0.5, 0.5, 0.5], [1, 1, 1],
+                [0.42, 0.46, 0.48])
+    for key in keys:
+        for pixel in neutrals:
+            assert matte_for(pixel, key) > 0.98
+
+
+def test_magenta_key_preserves_red_blue_and_cyan_subject_colours():
+    for subject in ([1, 0, 0], [0, 0, 1], [0, 1, 1]):
+        assert matte_for(subject, [1, 0, 1]) > 0.98
+
+
+def test_full_vector_despill_does_not_change_neutral_gray():
+    work = torch.full((1, 3, 4, 5), 0.35, dtype=torch.float32)
+    key = torch.tensor([1, 0, 1], dtype=torch.float32).view(1, 3, 1, 1)
+    key = engine.build_key_vector(key)
+    matte = torch.full((1, 1, 4, 5), 0.4, dtype=torch.float32)
+    result = engine._spill_suppress(work, None, None, key, matte, 2.0)
+    assert torch.allclose(result, work, atol=1e-6)
+
+
+def test_guided_sampling_supports_two_channel_hues_and_video_drift():
+    plugin = load_plugin()
+    node = plugin.KeylightCoreHubV3()
+    frames = torch.zeros((3, 32, 32, 3), dtype=torch.float32)
+    frames[0] = torch.tensor([0.80, 0.05, 1.00])
+    frames[1] = torch.tensor([0.95, 0.03, 0.78])
+    frames[2] = torch.tensor([0.70, 0.02, 0.98])
+    frames[:, 8:24, 8:24] = torch.tensor([0.50, 0.50, 0.50])
+    anchor = torch.tensor([0.75, 0.0, 1.0]).view(1, 3, 1, 1).repeat(3, 1, 1, 1)
+    refined = node._guided_key_from_border(frames, anchor)
+    assert refined.shape == (3, 3, 1, 1)
+    output = node.apply(
+        frames, "guided", "#BF00FF", "alpha", "#000000",
+        1.0, -0.02, 0.30,
+        shadow_recovery=0.85, edge_soft=0.0, defringe=0.0, shrink_expand=0.0,
+    )
+    mask = output[1]
+    assert torch.all(mask[:, 0, 0] < 0.01)
+    assert torch.all(mask[:, 16, 16] > 0.98)
+
+
+def test_plugin_mapping_schema_and_colour_bridge_are_legacy_compatible():
+    plugin = load_plugin()
+    expected = {
+        "AutoChromaSmartBackground", "KeylightSmartBackground", "KeylightCoreHubV3",
+        "Key Spill/Algo Args (V2.3.6fixE2_clean)",
+        "Key Protect Highlights Args (V2.3.6fixE2_clean)",
+        "Key Edge Args (V2.3.6fixE2_clean)",
+        "Key Matte Math Args (V2.3.6fixE2_clean)",
+        "Key Sampler Args (V2.3.6fixE2_clean)",
+    }
+    assert expected.issubset(plugin.NODE_CLASS_MAPPINGS)
+    schema = plugin.KeylightCoreHubV3.INPUT_TYPES()
+    assert list(schema["required"])[:8] == [
+        "image", "key_mode", "key_color", "background_mode", "bg_color",
+        "tolerance", "clip_black", "clip_white",
+    ]
+    assert list(schema["optional"]) == [
+        "sampler_args", "edge_args", "spill_algo_args", "ph_args", "mm_args",
+    ]
+    assert plugin.KeylightCoreHubV3.RETURN_TYPES == ("IMAGE", "MASK", "IMAGE", "IMAGE")
+    for value in ("#FF0000", "#00FF00", "#0000FF", "#00FFFF", "#FFFF00", "#FF00FF", "#BF00FF"):
+        parsed = plugin.core_helpers.to_color3(value)
+        assert parsed.shape == (1, 3, 1, 1)
+
+
+def test_rgba_uses_clean_foreground_even_in_colour_background_mode():
+    plugin = load_plugin()
+    node = plugin.KeylightCoreHubV3()
+    image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+    image[:] = torch.tensor([0.75, 0.0, 1.0])
+    image[:, 2:6, 2:6] = torch.tensor([0.4, 0.4, 0.4])
+    image_out, mask, _, rgba = node.apply(
+        image, "manual", "#BF00FF", "color", "#FFFFFF",
+        1.0, -0.02, 0.30,
+        shadow_recovery=0.85, edge_soft=0.0, defringe=0.0, shrink_expand=0.0,
+    )
+    assert torch.all(image_out[:, 0, 0] > 0.99)
+    assert mask[0, 0, 0] < 0.01
+    assert rgba[0, 0, 0, 3] < 0.01
+    assert not torch.all(rgba[0, 0, 0, :3] > 0.99)
