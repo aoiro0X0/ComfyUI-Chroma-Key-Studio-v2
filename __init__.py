@@ -59,14 +59,14 @@ NODE_CLASS_MAPPINGS = {
     "Key Sampler Args (V2.3.6fixE2_clean)": KeySamplerArgsV2_3_6,
 }
 
-# Update display names to reflect fixE3_clean_final while keeping keys the same
+# Keep mapping keys stable while exposing the new version in the UI.
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "KeylightCoreHubV3": "Keylight Core (Hub V2.3.6fixE3_clean_final)",
-    "Key Spill/Algo Args (V2.3.6fixE2_clean)": "Key Spill/Algo Args (V2.3.6fixE3_clean_final)",
-    "Key Protect Highlights Args (V2.3.6fixE2_clean)": "Key Protect Highlights Args (V2.3.6fixE3_clean_final)",
-    "Key Edge Args (V2.3.6fixE2_clean)": "Key Edge Args (V2.3.6fixE3_clean_final)",
-    "Key Matte Math Args (V2.3.6fixE2_clean)": "Key Matte Math Args (V2.3.6fixE3_clean_final)",
-    "Key Sampler Args (V2.3.6fixE2_clean)": "Key Sampler Args (V2.3.6fixE3_clean_final)",
+    "KeylightCoreHubV3": "Smart RGB Keylight (V3.0.0)",
+    "Key Spill/Algo Args (V2.3.6fixE2_clean)": "Key Spill/Algo Args (V3.0.0)",
+    "Key Protect Highlights Args (V2.3.6fixE2_clean)": "Key Protect Highlights Args (V3.0.0)",
+    "Key Edge Args (V2.3.6fixE2_clean)": "Key Edge Args (V3.0.0)",
+    "Key Matte Math Args (V2.3.6fixE2_clean)": "Key Matte Math Args (V3.0.0)",
+    "Key Sampler Args (V2.3.6fixE2_clean)": "Key Sampler Args (V3.0.0)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS","NODE_DISPLAY_NAME_MAPPINGS"]
