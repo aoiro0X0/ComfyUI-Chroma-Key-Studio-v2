@@ -10,7 +10,7 @@ class KeySamplerArgsV2_3_6:
             "rect_w": ("FLOAT", {"default":0.1, "min":0.0, "max":1.0, "step":0.001}),
             "rect_h": ("FLOAT", {"default":0.1, "min":0.0, "max":1.0, "step":0.001}),
         }}
-    RETURN_TYPES = ("CHROMA_STUDIO_V2_SAMPLER_ARGS",)
+    RETURN_TYPES = ("KEY_SAMPLER_ARGS",)
     RETURN_NAMES = ("sampler_args",)
     FUNCTION = "build"
     CATEGORY = "Chroma Key Studio V2"
