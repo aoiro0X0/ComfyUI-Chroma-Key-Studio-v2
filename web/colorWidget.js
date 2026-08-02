@@ -23,16 +23,16 @@ const getContrastTextColor = (hexColor) => {
 };
 
 const ChromaKeyStudioV2ColorWidget = {
-    CHROMA_STUDIO_V2_COLOR: (key, val) => {
+    COLORCODE: (key, val) => {
         const widget = {};
         widget.y = 0;
         widget.name = key;
-        widget.type = 'CHROMA_STUDIO_V2_COLOR';
+        widget.type = 'COLORCODE';
         widget.options = { default: '#222222' };
         widget.value = typeof val === 'string' ? val : '#222222';
 
         widget.draw = function (ctx, node, widgetWidth, widgetY, height) {
-            const hide = this.type !== 'CHROMA_STUDIO_V2_COLOR' || app.canvas.ds.scale < 0.5;
+            const hide = this.type !== 'COLORCODE' || app.canvas.ds.scale < 0.5;
             if (hide) {
                 return;
             }
@@ -124,10 +124,10 @@ app.registerExtension({
 
     getCustomWidgets() {
         return {
-            CHROMA_STUDIO_V2_COLOR: (node, inputName, inputData) => {
+            COLORCODE: (node, inputName, inputData) => {
                 return {
                     widget: node.addCustomWidget(
-                        ChromaKeyStudioV2ColorWidget.CHROMA_STUDIO_V2_COLOR(
+                        ChromaKeyStudioV2ColorWidget.COLORCODE(
                             inputName,
                             inputData?.[1]?.default || '#222222'
                         )
