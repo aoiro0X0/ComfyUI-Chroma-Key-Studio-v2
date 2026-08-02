@@ -604,8 +604,8 @@ def test_plugin_ids_are_v2_isolated_and_args_are_legacy_compatible():
         "image", "key_mode", "key_color", "background_mode", "bg_color",
         "tolerance", "clip_black", "clip_white",
     ]
-    assert schema["required"]["key_color"][0] == "CHROMA_STUDIO_V2_COLOR"
-    assert schema["required"]["bg_color"][0] == "CHROMA_STUDIO_V2_COLOR"
+    assert schema["required"]["key_color"][0] == "COLORCODE"
+    assert schema["required"]["bg_color"][0] == "COLORCODE"
     assert list(schema["optional"]) == [
         "sampler_args", "edge_args", "spill_algo_args", "ph_args", "mm_args",
     ]
@@ -625,7 +625,7 @@ def test_plugin_ids_are_v2_isolated_and_args_are_legacy_compatible():
     assert all("V2" in name for name in plugin.NODE_DISPLAY_NAME_MAPPINGS.values())
     assert all(cls.CATEGORY == "Chroma Key Studio V2" for cls in plugin.NODE_CLASS_MAPPINGS.values())
     smart_class = plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioSmartBackgroundV2"]
-    assert smart_class.RETURN_TYPES[1] == schema["required"]["key_color"][0]
+    assert smart_class.RETURN_TYPES[1] == "STRING"
     for value in ("#FF0000", "#00FF00", "#0000FF", "#00FFFF", "#FFFF00", "#FF00FF", "#BF00FF"):
         parsed = plugin.core_helpers.to_color3(value)
         assert parsed.shape == (1, 3, 1, 1)
@@ -654,11 +654,12 @@ def test_v2_load_preserves_legacy_private_modules():
                 sys.modules[name] = original
 
 
-def test_frontend_extension_and_widget_type_are_v2_isolated():
+def test_frontend_extension_keeps_unique_name_and_legacy_widget_contract():
     source = (ROOT / "web" / "colorWidget.js").read_text(encoding="utf-8")
     assert 'name: "ChromaKeyStudioV2.colorWidget"' in source
     assert 'name: "AILab.colorWidget"' not in source
-    assert "CHROMA_STUDIO_V2_COLOR" in source
+    assert "COLORCODE" in source
+    assert "CHROMA_STUDIO_V2_COLOR" not in source
 
 
 def test_rgba_uses_clean_foreground_even_in_colour_background_mode():
@@ -766,8 +767,8 @@ class KeylightRegressionTests(unittest.TestCase):
     def test_v2_load_preserves_legacy_private_modules(self):
         test_v2_load_preserves_legacy_private_modules()
 
-    def test_frontend_extension_and_widget_type_are_v2_isolated(self):
-        test_frontend_extension_and_widget_type_are_v2_isolated()
+    def test_frontend_extension_keeps_legacy_widget_contract(self):
+        test_frontend_extension_keeps_unique_name_and_legacy_widget_contract()
 
     def test_rgba_uses_clean_foreground_in_colour_mode(self):
         test_rgba_uses_clean_foreground_even_in_colour_background_mode()
