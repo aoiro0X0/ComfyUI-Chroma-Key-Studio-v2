@@ -16,9 +16,9 @@ class KeylightCoreHubV3:
         return {"required": {
                 "image": ("IMAGE",),
                 "key_mode": (["guided","manual","auto"], {"default":"guided"}),
-                "key_color": ("CHROMA_STUDIO_V2_COLOR", {"default": "#00FF00"}),
+                "key_color": ("COLORCODE", {"default": "#00FF00"}),
                 "background_mode": (["alpha","color","soft_color"], {"default":"alpha"}),
-                "bg_color": ("CHROMA_STUDIO_V2_COLOR", {"default": "#000000"}),
+                "bg_color": ("COLORCODE", {"default": "#000000"}),
                 "tolerance": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "clip_black": ("FLOAT", {"default": -0.02, "min": -1.0, "max": 1.0, "step": 0.001}),
                 "clip_white": ("FLOAT", {"default": 0.30, "min": 0.0, "max": 2.0, "step": 0.001}),
