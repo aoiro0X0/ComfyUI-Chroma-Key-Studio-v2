@@ -119,7 +119,7 @@ class SmartBackgroundTests(unittest.TestCase):
         )
         self.assertEqual(
             self.node.RETURN_TYPES,
-            ("IMAGE", "CHROMA_STUDIO_V2_COLOR", "STRING"),
+            ("IMAGE", "STRING", "STRING"),
         )
         self.assertEqual(self.node.RETURN_NAMES, ("background_image", "color_hex", "analysis_info"))
         self.assertEqual(self.node.CATEGORY, "Chroma Key Studio V2")
