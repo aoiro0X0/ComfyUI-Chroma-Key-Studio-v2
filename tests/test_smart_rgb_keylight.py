@@ -150,7 +150,7 @@ def test_guided_sampling_supports_two_channel_hues_and_video_drift():
     assert torch.all(mask[:, 16, 16] > 0.98)
 
 
-def test_plugin_mappings_and_socket_types_are_v2_isolated():
+def test_plugin_ids_are_v2_isolated_and_args_are_legacy_compatible():
     plugin = load_plugin()
     assert set(plugin.NODE_CLASS_MAPPINGS) == V2_IDS
     assert set(plugin.NODE_DISPLAY_NAME_MAPPINGS) == V2_IDS
@@ -168,12 +168,17 @@ def test_plugin_mappings_and_socket_types_are_v2_isolated():
         "sampler_args", "edge_args", "spill_algo_args", "ph_args", "mm_args",
     ]
     assert [schema["optional"][name][0] for name in schema["optional"]] == [
-        "CHROMA_STUDIO_V2_SAMPLER_ARGS",
-        "CHROMA_STUDIO_V2_EDGE_ARGS",
-        "CHROMA_STUDIO_V2_SPILL_ALGO_ARGS",
-        "CHROMA_STUDIO_V2_PH_ARGS",
-        "CHROMA_STUDIO_V2_MM_ARGS",
+        "KEY_SAMPLER_ARGS",
+        "KEY_EDGE_ARGS",
+        "KEY_SPILL_ALGO_ARGS",
+        "KEY_PH_ARGS",
+        "KEY_MM_ARGS",
     ]
+    assert plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioSamplerArgsV2"].RETURN_TYPES == ("KEY_SAMPLER_ARGS",)
+    assert plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioEdgeArgsV2"].RETURN_TYPES == ("KEY_EDGE_ARGS",)
+    assert plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioSpillArgsV2"].RETURN_TYPES == ("KEY_SPILL_ALGO_ARGS",)
+    assert plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioProtectHighlightsArgsV2"].RETURN_TYPES == ("KEY_PH_ARGS",)
+    assert plugin.NODE_CLASS_MAPPINGS["ChromaKeyStudioMatteMathArgsV2"].RETURN_TYPES == ("KEY_MM_ARGS",)
     assert node_class.RETURN_TYPES == ("IMAGE", "MASK", "IMAGE", "IMAGE")
     assert all("V2" in name for name in plugin.NODE_DISPLAY_NAME_MAPPINGS.values())
     assert all(cls.CATEGORY == "Chroma Key Studio V2" for cls in plugin.NODE_CLASS_MAPPINGS.values())
@@ -262,8 +267,8 @@ class KeylightRegressionTests(unittest.TestCase):
     def test_guided_sampling_supports_video_drift(self):
         test_guided_sampling_supports_two_channel_hues_and_video_drift()
 
-    def test_plugin_mappings_and_socket_types_are_v2_isolated(self):
-        test_plugin_mappings_and_socket_types_are_v2_isolated()
+    def test_plugin_ids_are_v2_isolated_and_args_are_legacy_compatible(self):
+        test_plugin_ids_are_v2_isolated_and_args_are_legacy_compatible()
 
     def test_v2_load_preserves_legacy_private_modules(self):
         test_v2_load_preserves_legacy_private_modules()
