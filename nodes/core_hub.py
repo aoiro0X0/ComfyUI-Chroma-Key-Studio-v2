@@ -28,11 +28,14 @@ class KeylightCoreHubV3:
                 "shrink_expand": ("FLOAT", {"default": 0.0, "min": -5.0, "max": 5.0, "step": 1.0}),
             },
             "optional": {
-                "sampler_args": ("CHROMA_STUDIO_V2_SAMPLER_ARGS",),
-                "edge_args": ("CHROMA_STUDIO_V2_EDGE_ARGS",),
-                "spill_algo_args": ("CHROMA_STUDIO_V2_SPILL_ALGO_ARGS",),
-                "ph_args": ("CHROMA_STUDIO_V2_PH_ARGS",),
-                "mm_args": ("CHROMA_STUDIO_V2_MM_ARGS",),
+                # Keep the legacy Args socket contracts: their dictionary
+                # schemas are compatible and this lets existing workflows
+                # reconnect without replacing every parameter node.
+                "sampler_args": ("KEY_SAMPLER_ARGS",),
+                "edge_args": ("KEY_EDGE_ARGS",),
+                "spill_algo_args": ("KEY_SPILL_ALGO_ARGS",),
+                "ph_args": ("KEY_PH_ARGS",),
+                "mm_args": ("KEY_MM_ARGS",),
             }
         }
 
