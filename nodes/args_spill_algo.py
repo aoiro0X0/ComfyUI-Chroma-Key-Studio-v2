@@ -11,7 +11,7 @@ class KeySpillAlgoArgsV2_3_6:
             "extra_lowalpha": ("FLOAT", {"default":1.5, "min":0.0, "max":8.0, "step":0.01}),
             "final_despill_strength": ("FLOAT", {"default":0.6, "min":0.0, "max":1.5, "step":0.01}),
         }}
-    RETURN_TYPES = ("CHROMA_STUDIO_V2_SPILL_ALGO_ARGS",)
+    RETURN_TYPES = ("KEY_SPILL_ALGO_ARGS",)
     RETURN_NAMES = ("spill_algo_args",)
     FUNCTION = "build"
     CATEGORY = "Chroma Key Studio V2"
