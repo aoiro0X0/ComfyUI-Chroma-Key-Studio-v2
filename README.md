@@ -2,7 +2,7 @@
 
 一个仓库提供智能抠像背景选色与自适应 Keylight。安装一次即可获得两个主节点和五个参数节点。
 
-V2 使用独立的仓库名、节点 ID、Python 命名空间、前端扩展名和连接类型，因此可以与旧的 node1、node2、Smart Background、Smart RGB Keylight 同时安装，不会抢占旧节点。
+V2 使用独立的仓库名、节点 ID、Python 命名空间、前端扩展名和颜色类型，因此可以与旧的 node1、node2、Smart Background、Smart RGB Keylight 同时安装，不会抢占旧节点。五类 Args 参数插口沿用旧版数据合同，已有参数节点可以直接连接 V2 Keylight。
 
 ## 包含节点
 
@@ -37,7 +37,7 @@ V2 使用独立的仓库名、节点 ID、Python 命名空间、前端扩展名�
 - Despill 与 Defringe 沿完整键色色度向量工作。
 - `image_rgba` 始终使用干净前景 RGB 与 Alpha，即使主输出选择了彩色合成背景。
 
-五个 Args 节点都不是必连项；只有需要集中覆盖高级参数时再连接。
+五个 Args 节点都不是必连项；只有需要集中覆盖高级参数时再连接。旧版的 Key Edge、Protect Highlights、Spill/Algo、Matte Math 和 Sampler Args 也可直接连接新版主节点。
 
 ## 安装
 
