@@ -54,6 +54,98 @@ def _morph_shrink_expand(matte, amount):
     return -F.max_pool2d(-matte, kernel_size=2 * radius + 1, stride=1, padding=radius)
 
 
+def _separable_average(x, radius):
+    """Fast box average with cost linear in radius instead of kernel area."""
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    horizontal = F.avg_pool2d(
+        x, kernel_size=(1, size), stride=1, padding=(0, radius)
+    )
+    return F.avg_pool2d(
+        horizontal, kernel_size=(size, 1), stride=1, padding=(radius, 0)
+    )
+
+
+def _separable_average_replicate(x, radius):
+    """Box average that does not invent transparent pixels at frame borders."""
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    horizontal = F.avg_pool2d(
+        F.pad(x, (radius, radius, 0, 0), mode="replicate"),
+        kernel_size=(1, size),
+        stride=1,
+    )
+    return F.avg_pool2d(
+        F.pad(horizontal, (0, 0, radius, radius), mode="replicate"),
+        kernel_size=(size, 1),
+        stride=1,
+    )
+
+
+def _horizontal_average(x, radius):
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    return F.avg_pool2d(
+        x, kernel_size=(1, size), stride=1, padding=(0, radius)
+    )
+
+
+def _vertical_average(x, radius):
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    return F.avg_pool2d(
+        x, kernel_size=(size, 1), stride=1, padding=(radius, 0)
+    )
+
+
+def _separable_maximum(x, radius):
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    horizontal = F.max_pool2d(
+        x, kernel_size=(1, size), stride=1, padding=(0, radius)
+    )
+    return F.max_pool2d(
+        horizontal, kernel_size=(size, 1), stride=1, padding=(radius, 0)
+    )
+
+
+def _horizontal_maximum(x, radius):
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    return F.max_pool2d(
+        x, kernel_size=(1, size), stride=1, padding=(0, radius)
+    )
+
+
+def _vertical_maximum(x, radius):
+    radius = int(radius)
+    if radius <= 0:
+        return x
+    size = 2 * radius + 1
+    return F.max_pool2d(
+        x, kernel_size=(size, 1), stride=1, padding=(radius, 0)
+    )
+
+
+def _edge_aware_smooth(matte, radius):
+    """Smooth only an existing transition, never grow alpha into clean screen."""
+    blurred = _separable_average_replicate(matte, radius)
+    transition = (matte > 1e-4) & (matte < 1.0 - 1e-4)
+    return torch.where(transition, blurred, matte)
+
+
 def build_key_vector(key_rgb):
     """Build a neutral-free full key vector for arbitrary-hue despill."""
     key_linear = srgb_to_linear(key_rgb.clamp(0, 1))
@@ -165,7 +257,20 @@ def _spill_suppress(
         + float(extra_lowalpha) * background_weight.square()
     ).clamp(min=0.0)
     if ph_mask is not None and ph_strength > 0.0:
-        suppress = suppress * (1.0 - ph_mask * ph_strength * 0.8).clamp(0.25, 1.0)
+        # Highlight protection is for confident foreground, not a licence to
+        # preserve a bright key-coloured motion edge.  Strong measured spill
+        # progressively disables the protection even when an old PH Args node
+        # supplies strength=1.
+        foreground_confidence = _smoothstep(0.80, 0.98, matte)
+        spill_confidence = spill / (spill + 0.04)
+        protection = (
+            ph_mask
+            * float(ph_strength)
+            * 0.8
+            * foreground_confidence
+            * (1.0 - spill_confidence)
+        )
+        suppress = suppress * (1.0 - protection).clamp(0.25, 1.0)
 
     corrected = work - spill * suppress * k
     return _restore_luminance(work, corrected)
@@ -181,6 +286,234 @@ def _defringe(work, key_vector, matte, strength):
     projection = (chroma * key_vector).sum(dim=1, keepdim=True).clamp(min=0.0)
     corrected = work - float(strength) * edge_band * projection * key_vector
     return _restore_luminance(work, corrected)
+
+
+def _adaptive_motion_cleanup(
+    rgb_srgb, key_srgb, matte, max_working_pixels=1_000_000
+):
+    """Recover key-contaminated motion blur without a per-shot preset.
+
+    A fast edge is a physical mixture of nearby foreground and screen colour.
+    Hue-only keyers can mistake that rotated mixture for opaque foreground.  This
+    routine finds clean foreground just inside the boundary, tests whether an
+    edge pixel lies on the foreground/screen mixing line, and only then repairs
+    both its alpha and unpremultiplied RGB.  Unrelated glow, texture and solid
+    highlights fail the mixing-line test and are left alone.
+    """
+    x = _to_nchw(rgb_srgb).float().clamp(0.0, 1.0)
+    key = _to_nchw(key_srgb).float().clamp(0.0, 1.0)
+    if key.shape[0] == 1 and x.shape[0] > 1:
+        key = key.repeat(x.shape[0], 1, 1, 1)
+    if min(x.shape[-2:]) < 8:
+        return x, matte
+
+    # Video IMAGE batches can contain dozens of 1K frames.  Process a bounded
+    # number at a time so temporary colour fields do not scale with clip length.
+    frame_pixels = int(x.shape[-2] * x.shape[-1])
+    if max_working_pixels is not None:
+        frames_per_chunk = max(1, int(max_working_pixels) // frame_pixels)
+        if x.shape[0] > frames_per_chunk:
+            corrected_rgb = torch.empty_like(x)
+            corrected_matte = torch.empty_like(matte)
+            for start in range(0, x.shape[0], frames_per_chunk):
+                end = min(x.shape[0], start + frames_per_chunk)
+                rgb_chunk, matte_chunk = _adaptive_motion_cleanup(
+                    x[start:end],
+                    key[start:end],
+                    matte[start:end],
+                    max_working_pixels=None,
+                )
+                corrected_rgb[start:end] = rgb_chunk
+                corrected_matte[start:end] = matte_chunk
+            return corrected_rgb, corrected_matte
+
+    # Scale the search with resolution.  Fast generated motion can span dozens
+    # of pixels at 1K, so the candidate boundary is wider than a normal antialias.
+    boundary_radius = max(2, min(64, int(round(min(x.shape[-2:]) * 0.05))))
+    sample_radius = min(64, boundary_radius * 3)
+
+    background_nearby = _separable_maximum(
+        (1.0 - matte).clamp(0.0, 1.0), boundary_radius
+    )
+    # Seed validation is deliberately much narrower than the candidate band.
+    # Otherwise a 1K knife blade or ring would need to be over 100px thick before
+    # it contained any usable foreground.  A local colour plateau plus the key
+    # direction gate rejects the falsely opaque inner half of a wide blur.
+    seed_radius = max(1, min(4, int(round(min(x.shape[-2:]) * 0.002))))
+    seed_background_nearby = _separable_maximum(
+        (1.0 - matte).clamp(0.0, 1.0), seed_radius
+    )
+    # Use a wider, resolution-scaled plateau check than the matte-isolation
+    # radius.  At 1K a 40-60px linear motion ramp can look nearly constant in a
+    # 3px window and masquerade as opaque foreground; a 9px window rejects that
+    # ramp while still leaving a valid centre seed in a 10px solid core.
+    plateau_radius = max(
+        1, min(8, int(round(min(x.shape[-2:]) * 0.004)))
+    )
+    square_plateau = (
+        _separable_maximum(x, plateau_radius)
+        + _separable_maximum(-x, plateau_radius)
+    ).amax(dim=1, keepdim=True) <= 0.06
+    horizontal_plateau = (
+        _horizontal_maximum(x, plateau_radius)
+        + _horizontal_maximum(-x, plateau_radius)
+    ).amax(dim=1, keepdim=True) <= 0.06
+    vertical_plateau = (
+        _vertical_maximum(x, plateau_radius)
+        + _vertical_maximum(-x, plateau_radius)
+    ).amax(dim=1, keepdim=True) <= 0.06
+    foreground_hue, foreground_saturation, _, _ = _chroma_features(x)
+    key_hue, _, _, _ = _chroma_features(key)
+    key_alignment = (foreground_hue * key_hue).sum(dim=1, keepdim=True)
+    seed_colour_is_safe = (
+        (foreground_saturation <= 0.04) | (key_alignment <= 0.20)
+    )
+    foreground_seed_base = (
+        (matte >= 0.985)
+        & (seed_background_nearby <= 0.02)
+        & seed_colour_is_safe
+    )
+    foreground_seeds = {
+        "square": (foreground_seed_base & square_plateau).to(dtype=x.dtype),
+        "horizontal": (
+            foreground_seed_base & horizontal_plateau
+        ).to(dtype=x.dtype),
+        "vertical": (
+            foreground_seed_base & vertical_plateau
+        ).to(dtype=x.dtype),
+    }
+    observed_delta = x - key
+    boundary_confidence = _smoothstep(0.03, 0.35, background_nearby)
+
+    # Try several neighbourhood sizes and keep the locally best physical fit.
+    # Small estimates avoid averaging adjacent red/blue parts into purple;
+    # larger estimates can still reach through a wide motion-blur band.
+    candidate_specs = (
+        ("square", max(2, seed_radius * 2)),
+        ("horizontal", sample_radius),
+        ("vertical", sample_radius),
+        ("square", sample_radius),
+    )
+    best_score = torch.full_like(matte, float("inf"))
+    fitted_alpha = torch.zeros_like(matte)
+    fit_error = torch.ones_like(matte)
+    support_confidence = torch.zeros_like(matte)
+    profile_confidence = torch.zeros_like(matte)
+    seen_candidates = set()
+    for orientation, radius in candidate_specs:
+        identity = (orientation, int(radius))
+        if identity in seen_candidates:
+            continue
+        seen_candidates.add(identity)
+        if orientation == "horizontal":
+            average = _horizontal_average
+        elif orientation == "vertical":
+            average = _vertical_average
+        else:
+            average = _separable_average
+        foreground_seed = foreground_seeds[orientation]
+        candidate_support = average(foreground_seed, radius)
+        candidate_foreground = average(
+            x * foreground_seed, radius
+        ) / (candidate_support + 1e-6)
+        foreground_delta = candidate_foreground - key
+        denominator = foreground_delta.square().sum(dim=1, keepdim=True) + 1e-6
+        candidate_alpha = (
+            (observed_delta * foreground_delta).sum(dim=1, keepdim=True)
+            / denominator
+        ).clamp(0.0, 1.0)
+        candidate_rgb = key + candidate_alpha * foreground_delta
+        candidate_error = torch.linalg.norm(
+            x - candidate_rgb, dim=1, keepdim=True
+        ) / (torch.linalg.norm(foreground_delta, dim=1, keepdim=True) + 0.02)
+        candidate_support_confidence = _smoothstep(
+            0.002, 0.03, candidate_support
+        )
+        candidate_fit_confidence = _smoothstep(0.14, 0.025, candidate_error)
+        candidate_profile_evidence = (
+            (candidate_fit_confidence >= 0.60)
+            & (candidate_support_confidence >= 0.40)
+            & (boundary_confidence >= 0.10)
+        )
+        candidate_low_mix = (
+            candidate_profile_evidence
+            & (candidate_alpha >= 0.08)
+            & (candidate_alpha <= 0.34)
+        ).to(dtype=x.dtype)
+        candidate_mid_mix = (
+            candidate_profile_evidence
+            & (candidate_alpha >= 0.38)
+            & (candidate_alpha <= 0.62)
+        ).to(dtype=x.dtype)
+        candidate_high_mix = (
+            candidate_profile_evidence
+            & (candidate_alpha >= 0.68)
+            & (candidate_alpha <= 0.92)
+        ).to(dtype=x.dtype)
+        profile_radius = max(3, boundary_radius)
+        if orientation == "horizontal":
+            maximum = _horizontal_maximum
+        elif orientation == "vertical":
+            maximum = _vertical_maximum
+        else:
+            maximum = _separable_maximum
+        candidate_profile_confidence = (
+            maximum(candidate_low_mix, profile_radius)
+            * maximum(candidate_mid_mix, profile_radius)
+            * maximum(candidate_high_mix, profile_radius)
+        )
+        candidate_score = (
+            candidate_error + 0.25 * (1.0 - candidate_support_confidence)
+            + 0.50 * (1.0 - candidate_profile_confidence)
+        )
+        better = candidate_score < best_score
+        best_score = torch.where(better, candidate_score, best_score)
+        fitted_alpha = torch.where(better, candidate_alpha, fitted_alpha)
+        fit_error = torch.where(better, candidate_error, fit_error)
+        support_confidence = torch.where(
+            better, candidate_support_confidence, support_confidence
+        )
+        profile_confidence = torch.where(
+            better, candidate_profile_confidence, profile_confidence
+        )
+
+    fit_confidence = _smoothstep(0.14, 0.025, fit_error)
+    # A single opaque yellow/orange rim can lie on the same mathematical line
+    # as a red/green mixture.  The selected candidate must carry its own
+    # direction-consistent low/mid/high alpha progression; evidence from a
+    # perpendicular edge or neighbouring coloured part cannot activate it.
+    alpha_error = (matte - fitted_alpha).abs().clamp(0.0, 1.0)
+    correction_confidence = _smoothstep(0.02, 0.12, alpha_error)
+    base_confidence = (
+        fit_confidence
+        * support_confidence
+        * boundary_confidence
+        * profile_confidence
+    )
+    alpha_confidence = (
+        base_confidence * correction_confidence
+    ).clamp(0.0, 0.95)
+
+    corrected_matte = (
+        matte * (1.0 - alpha_confidence)
+        + fitted_alpha * alpha_confidence
+    ).clamp(0.0, 1.0)
+
+    # Recover unpremultiplied foreground colour from the fitted physical alpha.
+    # The local colour estimate is used for the fit; direct unmixing retains more
+    # texture than simply copying that local average over the moving edge.
+    safe_alpha = fitted_alpha.clamp(min=0.06)
+    unmixed = ((x - (1.0 - fitted_alpha) * key) / safe_alpha).clamp(0.0, 1.0)
+    mixture_confidence = _smoothstep(
+        0.02, 0.18, (1.0 - fitted_alpha).clamp(0.0, 1.0)
+    )
+    rgb_confidence = (
+        base_confidence * mixture_confidence
+    ).clamp(0.0, 0.95)
+    corrected_rgb = (
+        x * (1.0 - rgb_confidence) + unmixed * rgb_confidence
+    ).clamp(0.0, 1.0)
+    return corrected_rgb, corrected_matte
 
 
 def composite(rgb_srgb, matte, mode="alpha", bg_color=None):
@@ -224,6 +557,7 @@ def run(
     use_linear=True,
     verbose=False,
     shadow_recovery=0.85,
+    adaptive_cleanup=True,
 ):
     x = _to_nchw(rgb_srgb).float().clamp(0, 1)
     if verbose:
@@ -239,13 +573,16 @@ def run(
         shadow_recovery=shadow_recovery,
     )
 
+    # Batch production uses this path by default.  It establishes a physically
+    # plausible baseline first; legacy Edge/Matte Args below remain authoritative
+    # optional finishing controls instead of being silently undone afterwards.
+    cleaned_source = x
+    if adaptive_cleanup:
+        cleaned_source, matte = _adaptive_motion_cleanup(x, key, matte)
+
     if edge_soft > 0.0:
         radius = int(max(1, round(float(edge_soft) * 10)))
-        size = 2 * radius + 1
-        kernel = torch.ones(
-            (1, 1, size, size), device=matte.device, dtype=matte.dtype
-        ) / float(size * size)
-        matte = F.conv2d(matte, kernel, padding=radius)
+        matte = _edge_aware_smooth(matte, radius)
     if abs(shrink_expand) > 0.0:
         matte = _morph_shrink_expand(matte, shrink_expand)
 
@@ -258,11 +595,7 @@ def run(
             matte = _morph_shrink_expand(matte, extra)
         if feather > 0.0:
             radius = int(max(1, round(feather * 10)))
-            size = 2 * radius + 1
-            kernel = torch.ones(
-                (1, 1, size, size), device=matte.device, dtype=matte.dtype
-            ) / float(size * size)
-            matte = F.conv2d(matte, kernel, padding=radius)
+            matte = _separable_average_replicate(matte, radius)
         if gamma != 1.0:
             matte = matte.clamp(0.0, 1.0) ** gamma
     matte = matte.clamp(0.0, 1.0)
@@ -297,7 +630,7 @@ def run(
         high = ph_threshold + ph_width * 0.5
         ph_mask = _smoothstep(low, high, luminance) ** ph_gamma
 
-    rgb_linear = srgb_to_linear(x)
+    rgb_linear = srgb_to_linear(cleaned_source)
     despilled = _spill_suppress(
         rgb_linear,
         projection,
