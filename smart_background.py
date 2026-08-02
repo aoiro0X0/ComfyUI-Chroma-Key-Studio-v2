@@ -325,7 +325,9 @@ class AutoChromaSmartBackground:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "CHROMA_STUDIO_V2_COLOR", "STRING")
+    # Preserve the original public contract: color_hex is a normal STRING so it
+    # can fan out to ColorInput and any other text/value consumers in a workflow.
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("background_image", "color_hex", "analysis_info")
     FUNCTION = "process"
     CATEGORY = "Chroma Key Studio V2"
