@@ -2,7 +2,7 @@
 
 一个仓库提供智能抠像背景选色与自适应 Keylight。安装一次即可获得两个主节点和五个参数节点。
 
-V2 使用独立的仓库名、节点 ID、Python 命名空间、前端扩展名和颜色类型，因此可以与旧的 node1、node2、Smart Background、Smart RGB Keylight 同时安装，不会抢占旧节点。五类 Args 参数插口沿用旧版数据合同，已有参数节点可以直接连接 V2 Keylight。
+V2 使用独立的仓库名、节点 ID、Python 命名空间和前端扩展名，因此可以与旧的 node1、node2、Smart Background、Smart RGB Keylight 同时安装，不会抢占旧节点。颜色接口恢复原版合同：Smart Background 的 `color_hex` 是通用 `STRING`，Keylight 的 `key_color` 与 `bg_color` 使用 `COLORCODE`；旧 ColorInput、其他字符串节点以及五类 Args 参数节点都可继续复用。
 
 ## 包含节点
 
@@ -71,13 +71,17 @@ git pull
   -> Smart Chroma Background (Studio V2).image
 
 Smart Chroma Background (Studio V2).color_hex
+  -> ColorInput/色值节点
   -> Adaptive Chroma Keylight (Studio V2).key_color
+
+Smart Chroma Background (Studio V2).color_hex
+  -> 工作流中其他需要十六进制颜色字符串的节点
 
 使用该纯色生成或合成后的待抠图像/视频
   -> Adaptive Chroma Keylight (Studio V2).image
 ```
 
-V2 的颜色输出和 Keylight 输入可以直接相连，不再需要中间的 AILab ColorInput。
+`color_hex` 已恢复为原版 `STRING` 接口，供多处分流使用；连接 Keylight 时保留原来的 ColorInput/色值节点，由它把字符串转换成 `COLORCODE`。不要再把 `color_hex` 直接连接到 `key_color`。
 
 ## 推荐设置
 
