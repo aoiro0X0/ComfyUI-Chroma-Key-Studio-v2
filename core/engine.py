@@ -24,8 +24,13 @@ def _to_nchw(img):
     raise ValueError("Unsupported image tensor shape.")
 
 
+def _channel_norm3(v):
+    """Fast Euclidean norm for the engine's three-channel colour tensors."""
+    return v.square().sum(dim=1, keepdim=True).sqrt()
+
+
 def _normalize(v, eps=1e-6):
-    return v / (torch.linalg.norm(v, dim=1, keepdim=True) + eps)
+    return v / (_channel_norm3(v) + eps)
 
 
 def _smoothstep(edge0, edge1, x):
@@ -110,13 +115,7 @@ def _separable_maximum(x, radius):
     radius = int(radius)
     if radius <= 0:
         return x
-    size = 2 * radius + 1
-    horizontal = F.max_pool2d(
-        x, kernel_size=(1, size), stride=1, padding=(0, radius)
-    )
-    return F.max_pool2d(
-        horizontal, kernel_size=(size, 1), stride=1, padding=(radius, 0)
-    )
+    return _vertical_maximum(_horizontal_maximum(x, radius), radius)
 
 
 def _horizontal_maximum(x, radius):
@@ -124,9 +123,13 @@ def _horizontal_maximum(x, radius):
     if radius <= 0:
         return x
     size = 2 * radius + 1
-    return F.max_pool2d(
-        x, kernel_size=(1, size), stride=1, padding=(0, radius)
+    padded = F.pad(
+        x, (radius, radius, 0, 0), mode="constant", value=float("-inf")
     )
+    # unfold is a stride-only view; amax reduces it without materialising a
+    # [N,C,H,W,K] tensor.  This is equivalent to the old 1D max_pool2d call,
+    # but avoids its very slow CPU kernel for large motion-search radii.
+    return padded.unfold(3, size, 1).amax(dim=-1)
 
 
 def _vertical_maximum(x, radius):
@@ -134,9 +137,10 @@ def _vertical_maximum(x, radius):
     if radius <= 0:
         return x
     size = 2 * radius + 1
-    return F.max_pool2d(
-        x, kernel_size=(size, 1), stride=1, padding=(radius, 0)
+    padded = F.pad(
+        x, (0, 0, radius, radius), mode="constant", value=float("-inf")
     )
+    return padded.unfold(2, size, 1).amax(dim=-1)
 
 
 def _edge_aware_smooth(matte, radius):
@@ -423,9 +427,9 @@ def _adaptive_motion_cleanup(
             / denominator
         ).clamp(0.0, 1.0)
         candidate_rgb = key + candidate_alpha * foreground_delta
-        candidate_error = torch.linalg.norm(
-            x - candidate_rgb, dim=1, keepdim=True
-        ) / (torch.linalg.norm(foreground_delta, dim=1, keepdim=True) + 0.02)
+        candidate_error = _channel_norm3(x - candidate_rgb) / (
+            _channel_norm3(foreground_delta) + 0.02
+        )
         candidate_support_confidence = _smoothstep(
             0.002, 0.03, candidate_support
         )
