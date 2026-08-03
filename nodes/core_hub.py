@@ -5,6 +5,116 @@ import torch
 from ..core.engine import run as engine_run
 from ..core.helpers import to_color3
 
+
+_ACCELERATOR_MIN_PIXELS = 256 * 256
+_ACCELERATOR_CHUNK_PIXELS = 1_000_000
+_FAILED_ACCELERATOR_DEVICES = set()
+
+
+def _comfy_execution_device():
+    """Return ComfyUI's selected accelerator without making it a hard import."""
+    try:
+        from comfy import model_management
+        device = model_management.get_torch_device()
+    except (ImportError, AttributeError, RuntimeError):
+        return None
+    if getattr(device, "type", None) == "cpu":
+        return None
+    if str(device) in _FAILED_ACCELERATOR_DEVICES:
+        return None
+    return device
+
+
+def _engine_call(x, key, bg, options):
+    return engine_run(x, key, bg_color=bg, **options)
+
+
+def _run_engine_accelerated(x, key, bg, device, options):
+    """Run complete Keylight chunks on one device and return to the input device."""
+    frame_pixels = int(x.shape[-2] * x.shape[-1])
+    frames_per_chunk = max(1, _ACCELERATOR_CHUNK_PIXELS // frame_pixels)
+    alpha_background = str(options.get("background_mode", "alpha")).lower() == "alpha"
+    original_device = x.device
+    comp_chunks = []
+    alpha_chunks = []
+    clean_chunks = []
+
+    with torch.inference_mode():
+        key_device = key.to(device=device, dtype=x.dtype)
+        bg_device = bg.to(device=device, dtype=x.dtype)
+        for start in range(0, x.shape[0], frames_per_chunk):
+            end = min(x.shape[0], start + frames_per_chunk)
+            x_chunk = x[start:end].to(device=device, dtype=x.dtype)
+            key_chunk = (
+                key_device
+                if key_device.shape[0] == 1
+                else key_device[start:end]
+            )
+            comp, alpha, _, clean = _engine_call(
+                x_chunk, key_chunk, bg_device, options
+            )
+            # One packed transfer avoids returning full-resolution results
+            # separately.  In alpha mode comp and clean are identical, and
+            # mask_image is always an exact alpha repeat, so neither duplicate
+            # crosses the bus.
+            if alpha_background:
+                packed = torch.cat((alpha, clean), dim=1).to(original_device)
+                alpha_chunk, clean_chunk = packed.split((1, 3), dim=1)
+                comp_chunk = clean_chunk
+            else:
+                packed = torch.cat((comp, alpha, clean), dim=1).to(original_device)
+                comp_chunk, alpha_chunk, clean_chunk = packed.split(
+                    (3, 1, 3), dim=1
+                )
+            comp_chunks.append(comp_chunk)
+            alpha_chunks.append(alpha_chunk)
+            clean_chunks.append(clean_chunk)
+
+    comp = torch.cat(comp_chunks, dim=0)
+    alpha = torch.cat(alpha_chunks, dim=0)
+    clean = torch.cat(clean_chunks, dim=0)
+    return comp, alpha, alpha.repeat(1, 3, 1, 1), clean
+
+
+def _release_accelerator_cache(device):
+    device_type = getattr(device, "type", None)
+    try:
+        if device_type == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif device_type == "mps" and hasattr(torch, "mps"):
+            torch.mps.empty_cache()
+    except RuntimeError:
+        pass
+
+
+def _run_engine_device_aware(x, key, bg, options):
+    """Use ComfyUI's accelerator automatically, with a transparent CPU fallback."""
+    total_pixels = int(x.shape[0] * x.shape[-2] * x.shape[-1])
+    if x.device.type != "cpu" or total_pixels < _ACCELERATOR_MIN_PIXELS:
+        return _engine_call(x, key, bg, options)
+
+    device = _comfy_execution_device()
+    if device is None:
+        return _engine_call(x, key, bg, options)
+    try:
+        return _run_engine_accelerated(x, key, bg, device, options)
+    except (RuntimeError, NotImplementedError) as error:
+        # Unsupported backends and tight VRAM configurations must remain usable.
+        # Disable only the failed device for later calls in this process.
+        device_name = str(device)
+        failure_message = str(error).replace("\n", " ")[:240]
+        _FAILED_ACCELERATOR_DEVICES.add(device_name)
+
+    # Leave the exception scope first so its traceback releases any live device
+    # tensors before clearing the cache or starting the CPU recomputation.
+    _release_accelerator_cache(device)
+    print(
+        "[Chroma Key Studio V2] Keylight accelerator "
+        f"{device_name} unavailable; falling back to CPU ({failure_message})."
+    )
+    return _engine_call(x, key, bg, options)
+
+
 class KeylightCoreHubV3:
     CATEGORY = "Chroma Key Studio V2"
     FUNCTION = "apply"
@@ -196,13 +306,26 @@ class KeylightCoreHubV3:
         ph_cfg          = ph_args or None
         mm_cfg          = mm_args or None
 
-        # Call engine
-        comp, a, mask_img, clean_foreground = engine_run(
-            x_bchw, key_rgb, float(tolerance), float(clip_black), float(clip_white),
-            edge_soft=edge_soft, shrink_expand=shrink_expand, defringe=defringe,
-            spill_algo=spill_cfg, ph=ph_cfg, matte_math=mm_cfg,
-            background_mode=str(background_mode), bg_color=bg_rgb,
-            use_linear=True, verbose=False, shadow_recovery=float(shadow_recovery)
+        # Keep matte, motion cleanup, despill and defringe together on ComfyUI's
+        # selected execution device.  Large video batches are chunked by pixels;
+        # unsupported accelerators transparently fall back to the optimized CPU.
+        engine_options = {
+            "tolerance": float(tolerance),
+            "clip_black": float(clip_black),
+            "clip_white": float(clip_white),
+            "edge_soft": edge_soft,
+            "shrink_expand": shrink_expand,
+            "defringe": defringe,
+            "spill_algo": spill_cfg,
+            "ph": ph_cfg,
+            "matte_math": mm_cfg,
+            "background_mode": str(background_mode),
+            "use_linear": True,
+            "verbose": False,
+            "shadow_recovery": float(shadow_recovery),
+        }
+        comp, a, mask_img, clean_foreground = _run_engine_device_aware(
+            x_bchw, key_rgb, bg_rgb, engine_options
         )
 
         # Build normalized outputs
