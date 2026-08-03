@@ -463,6 +463,123 @@ def test_keylight_node_keeps_adaptive_cleanup_with_legacy_edge_and_ph_args():
     assert rgba[0, 32, edge, 1] - rgba[0, 32, edge, 0] < 0.01
 
 
+def keylight_engine_options():
+    return {
+        "tolerance": 1.0,
+        "clip_black": -0.02,
+        "clip_white": 0.30,
+        "edge_soft": 0.05,
+        "shrink_expand": 0.0,
+        "defringe": 0.07,
+        "spill_algo": None,
+        "ph": None,
+        "matte_math": None,
+        "background_mode": "alpha",
+        "use_linear": True,
+        "verbose": False,
+        "shadow_recovery": 0.85,
+    }
+
+
+def test_accelerated_engine_matches_cpu_when_available():
+    if torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        return
+
+    plugin = load_plugin()
+    node_module = plugin.core_hub
+    values = torch.linspace(0.0, 1.0, 41).tolist()
+    image, key, _, _ = make_motion_blur_strip(
+        [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], values, size=256
+    )
+    bg = torch.zeros((1, 3, 1, 1), dtype=image.dtype)
+    options = keylight_engine_options()
+    expected = node_module._engine_call(image, key, bg, options)
+    actual = node_module._run_engine_accelerated(
+        image, key, bg, device, options
+    )
+    for expected_tensor, actual_tensor in zip(expected, actual):
+        assert torch.allclose(
+            actual_tensor, expected_tensor, atol=2e-4, rtol=2e-4
+        )
+    assert torch.equal(actual[2], actual[1].repeat(1, 3, 1, 1))
+
+
+def test_accelerator_failure_falls_back_to_cpu():
+    plugin = load_plugin()
+    node_module = plugin.core_hub
+    image, key, _, _ = make_motion_blur_strip(
+        [0.0, 1.0, 0.0], [1.0, 0.0, 0.0],
+        [0.0, 0.2, 0.5, 0.8, 1.0], size=64,
+    )
+    bg = torch.zeros((1, 3, 1, 1), dtype=image.dtype)
+    options = keylight_engine_options()
+    expected = node_module._engine_call(image, key, bg, options)
+
+    original_device = node_module._comfy_execution_device
+    original_accelerated = node_module._run_engine_accelerated
+    original_minimum = node_module._ACCELERATOR_MIN_PIXELS
+    node_module._FAILED_ACCELERATOR_DEVICES.discard("mps")
+    try:
+        node_module._ACCELERATOR_MIN_PIXELS = 0
+        node_module._comfy_execution_device = lambda: torch.device("mps")
+
+        def fail_acceleration(*args, **kwargs):
+            raise RuntimeError("forced accelerator failure")
+
+        node_module._run_engine_accelerated = fail_acceleration
+        actual = node_module._run_engine_device_aware(
+            image, key, bg, options
+        )
+        for expected_tensor, actual_tensor in zip(expected, actual):
+            assert torch.equal(actual_tensor, expected_tensor)
+        assert "mps" in node_module._FAILED_ACCELERATOR_DEVICES
+    finally:
+        node_module._comfy_execution_device = original_device
+        node_module._run_engine_accelerated = original_accelerated
+        node_module._ACCELERATOR_MIN_PIXELS = original_minimum
+        node_module._FAILED_ACCELERATOR_DEVICES.discard("mps")
+
+
+def test_accelerated_engine_chunking_preserves_batch_order():
+    plugin = load_plugin()
+    node_module = plugin.core_hub
+    frames = []
+    keys = []
+    for key_colour, foreground_colour in (
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.5, 0.0]),
+        ([1.0, 0.0, 1.0], [0.0, 0.8, 0.9]),
+        ([1.0, 0.0, 0.0], [0.0, 1.0, 1.0]),
+    ):
+        image, key, _, _ = make_motion_blur_strip(
+            key_colour, foreground_colour,
+            [0.0, 0.2, 0.5, 0.8, 1.0], size=64,
+        )
+        frames.append(image)
+        keys.append(key)
+    batch = torch.cat(frames, dim=0)
+    key_batch = torch.cat(keys, dim=0)
+    bg = torch.tensor([0.15, 0.20, 0.25], dtype=batch.dtype).view(1, 3, 1, 1)
+    original_chunk_pixels = node_module._ACCELERATOR_CHUNK_PIXELS
+    try:
+        node_module._ACCELERATOR_CHUNK_PIXELS = 64 * 64
+        for background_mode in ("alpha", "color"):
+            options = keylight_engine_options()
+            options["background_mode"] = background_mode
+            expected = node_module._engine_call(batch, key_batch, bg, options)
+            actual = node_module._run_engine_accelerated(
+                batch, key_batch, bg, torch.device("cpu"), options
+            )
+            for expected_tensor, actual_tensor in zip(expected, actual):
+                assert torch.equal(actual_tensor, expected_tensor)
+    finally:
+        node_module._ACCELERATOR_CHUNK_PIXELS = original_chunk_pixels
+
+
 def test_adaptive_cleanup_handles_wide_motion_blur_at_production_resolution():
     size = 1024
     values = torch.linspace(0.0, 1.0, 61)
@@ -748,6 +865,15 @@ class KeylightRegressionTests(unittest.TestCase):
 
     def test_keylight_node_accepts_legacy_edge_and_ph_args(self):
         test_keylight_node_keeps_adaptive_cleanup_with_legacy_edge_and_ph_args()
+
+    def test_accelerated_engine_matches_cpu(self):
+        test_accelerated_engine_matches_cpu_when_available()
+
+    def test_accelerator_failure_falls_back_to_cpu(self):
+        test_accelerator_failure_falls_back_to_cpu()
+
+    def test_accelerated_engine_chunking_preserves_batch_order(self):
+        test_accelerated_engine_chunking_preserves_batch_order()
 
     def test_adaptive_cleanup_handles_wide_production_motion_blur(self):
         test_adaptive_cleanup_handles_wide_motion_blur_at_production_resolution()
